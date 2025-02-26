@@ -1,4 +1,4 @@
-module github.com/go-voxels
+module github.com/leterax/go-voxels
 
 go 1.24.0
 

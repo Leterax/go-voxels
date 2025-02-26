@@ -160,7 +160,13 @@ func (c *Camera) UpVector() mgl32.Vec3 {
 
 // ProcessKeyboardInput processes keyboard input for camera movement
 func (c *Camera) ProcessKeyboardInput(deltaTime float32, window *openglhelper.Window) {
+	// Base speed calculation
 	speed := c.moveSpeed * deltaTime
+
+	// Check if CTRL is pressed for speed boost (20x faster)
+	if window.GetKeyState(KeyLeftCtrl) == Press {
+		speed *= 20.0
+	}
 
 	// Forward/Backward
 	if window.GetKeyState(KeyW) == Press {

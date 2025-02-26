@@ -9,7 +9,7 @@ import (
 	"github.com/go-gl/gl/v4.6-core/gl"
 	"github.com/go-gl/glfw/v3.3/glfw"
 	"github.com/go-gl/mathgl/mgl32"
-	"github.com/go-voxels/pkg/voxel"
+	"github.com/leterax/go-voxels/pkg/voxel"
 )
 
 // Renderer handles rendering logic and game loop
@@ -39,13 +39,15 @@ type Renderer struct {
 	chunkPositionsBuffer *openglhelper.BufferObject
 	chunkPositions       []mgl32.Vec4
 
+	// Rendering modes
+	isWireframeMode bool
+
 	// Cleanup tracking
 	isClosed bool
 }
 
 // NewRenderer creates a new renderer with the specified dimensions and title
 func NewRenderer(width, height int, title string) (*Renderer, error) {
-	fmt.Printf("Here!")
 	// Create window
 	window, err := openglhelper.NewWindow(width, height, title, false)
 	if err != nil {
@@ -174,7 +176,15 @@ func (r *Renderer) Run(chunks []*voxel.Chunk) {
 	// Set up initial OpenGL state
 	gl.Enable(gl.DEPTH_TEST)
 	gl.DepthFunc(gl.LESS)
-	gl.ClearColor(0.05, 0.05, 0.1, 1.0) // Dark blue background
+	gl.ClearColor(0.05, 0.05, 0.1, 1.0)        // Dark blue background
+	gl.PolygonMode(gl.FRONT_AND_BACK, gl.FILL) // Ensure we start in solid mode
+	r.isWireframeMode = false                  // Initialize wireframe mode to false
+
+	// Set initial shader uniforms
+	r.cubeShader.Use()
+
+	// Initialize draw commands for all chunks at startup
+	r.UpdateDrawCommands(chunks)
 
 	// Main loop
 	for !r.window.ShouldClose() {
@@ -195,6 +205,9 @@ func (r *Renderer) Run(chunks []*voxel.Chunk) {
 
 		// Render all chunks using multi-draw indirect
 		if len(chunks) > 0 {
+			// Update draw commands every frame in case chunks have changed
+			// This could be optimized to only update when chunks actually change
+			r.UpdateDrawCommands(chunks)
 			r.RenderChunksIndirect(chunks)
 		}
 
@@ -252,6 +265,11 @@ func (r *Renderer) keyCallback(window *glfw.Window, key glfw.Key, scancode int, 
 	if key == glfw.KeyC && action == glfw.Press {
 		r.window.ToggleMouseCaptured()
 		r.camera.ResetMouseState()
+	}
+
+	// Toggle wireframe mode with X key
+	if key == KeyX && action == glfw.Press {
+		r.ToggleWireframeMode()
 	}
 }
 
@@ -477,4 +495,17 @@ func (r *Renderer) RenderChunksIndirect(chunks []*voxel.Chunk) {
 
 	// Advance to the next buffer section
 	r.tripleBuffer.Advance()
+}
+
+// ToggleWireframeMode switches between solid and wireframe rendering
+func (r *Renderer) ToggleWireframeMode() {
+	r.isWireframeMode = !r.isWireframeMode
+
+	if r.isWireframeMode {
+		// Set GL to wireframe mode
+		gl.PolygonMode(gl.FRONT_AND_BACK, gl.LINE)
+	} else {
+		// Set GL back to fill mode
+		gl.PolygonMode(gl.FRONT_AND_BACK, gl.FILL)
+	}
 }

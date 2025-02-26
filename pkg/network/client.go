@@ -8,7 +8,7 @@ import (
 	"net"
 	"strings"
 
-	"github.com/go-voxels/pkg/voxel"
+	"github.com/leterax/go-voxels/pkg/voxel"
 )
 
 const (

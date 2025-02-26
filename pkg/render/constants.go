@@ -6,12 +6,15 @@ import (
 
 // Key constants for keyboard input
 const (
-	KeyW      = glfw.KeyW
-	KeyA      = glfw.KeyA
-	KeyS      = glfw.KeyS
-	KeyD      = glfw.KeyD
-	KeySpace  = glfw.KeySpace
-	KeyEscape = glfw.KeyEscape
+	KeyW        = glfw.KeyW
+	KeyA        = glfw.KeyA
+	KeyS        = glfw.KeyS
+	KeyD        = glfw.KeyD
+	KeySpace    = glfw.KeySpace
+	KeyEscape   = glfw.KeyEscape
+	KeyLeftCtrl = glfw.KeyLeftControl
+	KeyX        = glfw.KeyX
+	KeyU        = glfw.KeyU
 )
 
 // Action constants for key states

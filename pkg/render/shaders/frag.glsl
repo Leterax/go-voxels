@@ -11,7 +11,7 @@ uniform vec3 viewPos;
 
 void main()
 {
-    // Use the vertex color directly
+    // Normal rendering mode - use the vertex color with lighting
     vec3 objectColor = Color;
 
     // ambient
@@ -33,7 +33,5 @@ void main()
 
     // combine
     vec3 result = (ambient + diffuse + specular) * objectColor;
-
-    // Output final color
-    FragColor = vec4(result, 1.0);
+    FragColor = vec4(result, 1.0); 
 }
