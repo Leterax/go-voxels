@@ -2,16 +2,14 @@ package render
 
 import (
 	"fmt"
-	"math"
-	"math/rand"
-	"openglhelper"
-	"sync"
-	"time"
 	"unsafe"
+
+	"openglhelper"
 
 	"github.com/go-gl/gl/v4.6-core/gl"
 	"github.com/go-gl/glfw/v3.3/glfw"
 	"github.com/go-gl/mathgl/mgl32"
+	"github.com/go-voxels/pkg/voxel"
 )
 
 // Renderer handles rendering logic and game loop
@@ -26,43 +24,28 @@ type Renderer struct {
 	deltaTime     float32
 	totalTime     float32
 
-	// Cube rendering data
-	numCubes          int
-	cubesPerBatch     int // How many cubes to update per frame
-	currentBatchIndex int // Current batch index being updated
-	colorCycleTime    float32
-
-	// Cube mesh data
+	// Voxel rendering data
 	cubeVAO *openglhelper.VertexArrayObject
-	cubeVBO *openglhelper.BufferObject
-	cubeEBO *openglhelper.BufferObject
 
-	// Cube instance data
-	positions  []mgl32.Vec3
-	velocities []mgl32.Vec3
-	colors     []mgl32.Vec3
-	colorPhase []float32 // Phase offset for color cycling
+	// Triple-buffered persistent memory for chunk data
+	tripleBuffer *openglhelper.TripleBuffer
 
-	// Persistent buffer mapping with triple buffering
-	mappedMemory     []float32 // Go slice backed by persistent mapped memory
-	bufferSize       int       // Size of each buffer section in bytes
-	numBuffers       int       // Number of buffer sections (3 for triple buffering)
-	currentBufferIdx int       // Index of the buffer section currently being written to
-	bufferOffsets    []int     // Offsets for each buffer section (in float32 units)
-	syncObjects      []uintptr // Fence sync objects for each buffer section
+	// Multi-draw indirect support
+	indirectBuffer       *openglhelper.BufferObject
+	drawCommands         []openglhelper.DrawElementsIndirectCommand
+	maxDrawCommands      int
+	currentDrawCommands  int
+	indicesBuffer        *openglhelper.BufferObject
+	chunkPositionsBuffer *openglhelper.BufferObject
+	chunkPositions       []mgl32.Vec4
 
-	// Single thread update control
-	updateMutex        sync.Mutex
-	updatedBufferIdx   int
-	updateQuitChan     chan struct{}
-	isUpdateThreadBusy bool
-	lastUpdateTime     time.Time
-	updateBufferIdx    int
-	isClosed           bool
+	// Cleanup tracking
+	isClosed bool
 }
 
 // NewRenderer creates a new renderer with the specified dimensions and title
 func NewRenderer(width, height int, title string) (*Renderer, error) {
+	fmt.Printf("Here!")
 	// Create window
 	window, err := openglhelper.NewWindow(width, height, title, false)
 	if err != nil {
@@ -75,19 +58,8 @@ func NewRenderer(width, height int, title string) (*Renderer, error) {
 	camera.LookAt(mgl32.Vec3{0, 0, 0})
 
 	renderer := &Renderer{
-		window:            window,
-		camera:            camera,
-		numCubes:          50000, // 50,000 cubes
-		cubesPerBatch:     5000,  // Update 5,000 cubes per frame (10% of total)
-		currentBatchIndex: 0,     // Start with first batch
-		numBuffers:        3,     // Triple buffering
-		currentBufferIdx:  0,
-		updatedBufferIdx:  -1,  // No buffer updated yet
-		colorCycleTime:    5.0, // 5 seconds for a complete color cycle
-
-		// Initialize update control
-		updateQuitChan:     make(chan struct{}),
-		isUpdateThreadBusy: false,
+		window: window,
+		camera: camera,
 	}
 
 	// Set up callbacks
@@ -104,419 +76,101 @@ func NewRenderer(width, height int, title string) (*Renderer, error) {
 	}
 	renderer.cubeShader = shader
 
-	// Initialize cube rendering system
-	if err := renderer.initCubeRenderSystem(); err != nil {
-		return nil, fmt.Errorf("failed to initialize cube render system: %w", err)
+	// Initialize voxel rendering system
+	if err := renderer.initVoxelRenderSystem(); err != nil {
+		return nil, fmt.Errorf("failed to initialize voxel render system: %w", err)
 	}
-
-	// Start the update thread that will handle color updates
-	go renderer.updateThread()
 
 	return renderer, nil
 }
 
-// initCubeRenderSystem sets up the cube geometry and persistent buffer
-func (r *Renderer) initCubeRenderSystem() error {
-	// Define cube vertices - each vertex contains position, normal and color
-	// Format: x, y, z, nx, ny, nz, r, g, b
-	baseCubeVertices := []float32{
-		// Front face
-		-0.5, -0.5, 0.5, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, // Bottom-left
-		0.5, -0.5, 0.5, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, // Bottom-right
-		0.5, 0.5, 0.5, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, // Top-right
-		-0.5, 0.5, 0.5, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, // Top-left
-
-		// Back face
-		-0.5, -0.5, -0.5, 0.0, 0.0, -1.0, 1.0, 1.0, 1.0, // Bottom-left
-		0.5, -0.5, -0.5, 0.0, 0.0, -1.0, 1.0, 1.0, 1.0, // Bottom-right
-		0.5, 0.5, -0.5, 0.0, 0.0, -1.0, 1.0, 1.0, 1.0, // Top-right
-		-0.5, 0.5, -0.5, 0.0, 0.0, -1.0, 1.0, 1.0, 1.0, // Top-left
-
-		// Left face
-		-0.5, 0.5, 0.5, -1.0, 0.0, 0.0, 1.0, 1.0, 1.0, // Top-right
-		-0.5, 0.5, -0.5, -1.0, 0.0, 0.0, 1.0, 1.0, 1.0, // Top-left
-		-0.5, -0.5, -0.5, -1.0, 0.0, 0.0, 1.0, 1.0, 1.0, // Bottom-left
-		-0.5, -0.5, 0.5, -1.0, 0.0, 0.0, 1.0, 1.0, 1.0, // Bottom-right
-
-		// Right face
-		0.5, 0.5, 0.5, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, // Top-left
-		0.5, 0.5, -0.5, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, // Top-right
-		0.5, -0.5, -0.5, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, // Bottom-right
-		0.5, -0.5, 0.5, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, // Bottom-left
-
-		// Bottom face
-		-0.5, -0.5, -0.5, 0.0, -1.0, 0.0, 1.0, 1.0, 1.0, // Bottom-left
-		0.5, -0.5, -0.5, 0.0, -1.0, 0.0, 1.0, 1.0, 1.0, // Bottom-right
-		0.5, -0.5, 0.5, 0.0, -1.0, 0.0, 1.0, 1.0, 1.0, // Top-right
-		-0.5, -0.5, 0.5, 0.0, -1.0, 0.0, 1.0, 1.0, 1.0, // Top-left
-
-		// Top face
-		-0.5, 0.5, -0.5, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, // Top-left
-		0.5, 0.5, -0.5, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, // Top-right
-		0.5, 0.5, 0.5, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, // Bottom-right
-		-0.5, 0.5, 0.5, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, // Bottom-left
-	}
-
-	// Create indices for all cubes
-	indices := r.createCubeIndices()
-
-	// Create VAO and EBO
-	r.cubeVAO = openglhelper.NewVAO()
+// initVoxelRenderSystem sets up the geometry and buffers for voxel rendering
+func (r *Renderer) initVoxelRenderSystem() error {
+	// Create a VAO for the voxel data
+	vao := openglhelper.NewVAO()
+	r.cubeVAO = vao
 	r.cubeVAO.Bind()
 
-	// Create a temporary static VBO for vertex setup - we'll replace this with the persistent one
-	tempVBO := openglhelper.NewVBO(baseCubeVertices, openglhelper.StaticDraw)
+	// Calculate the required buffer size for persistent mapping
+	// Each chunk contains packed vertices (uint32) for each quad
+	const maxQuadsPerChunk = 65536 // Maximum number of quads we expect in a chunk
+	const bytesPerVertex = 4       // 4 bytes for each packed uint32 vertex
+	const verticesPerQuad = 4      // Each quad has 4 vertices
+	const numBuffers = 3           // Triple buffering
 
-	// Create an EBO for all the cube indices
-	r.cubeEBO = openglhelper.NewEBO(indices, openglhelper.StaticDraw)
+	// Calculate size requirements
+	vertexBufferSize := maxQuadsPerChunk * verticesPerQuad * bytesPerVertex
 
-	// Set up vertex attributes
-	r.cubeVAO.SetVertexAttribPointer(0, 3, gl.FLOAT, false, 9*4, 0)
-	r.cubeVAO.SetVertexAttribPointer(1, 3, gl.FLOAT, false, 9*4, 3*4)
-	r.cubeVAO.SetVertexAttribPointer(2, 3, gl.FLOAT, false, 9*4, 6*4)
-
-	// Unbind temporary VBO (we don't need it anymore)
-	tempVBO.Unbind()
-	tempVBO.Delete()
-
-	// Initialize cube data (positions, colors)
-	r.initializeCubeData()
-
-	// Calculate buffer sizes and offsets
-	floatsPerVertex := 9  // 3 position + 3 normal + 3 color
-	verticesPerCube := 24 // 6 faces * 4 vertices per face
-	floatsPerCube := floatsPerVertex * verticesPerCube
-	totalFloats := r.numCubes * floatsPerCube
-
-	// Size of each buffer section in bytes
-	r.bufferSize = totalFloats * 4 // 4 bytes per float
-
-	// Total size of the buffer in bytes (all sections)
-	totalBufferSize := r.bufferSize * r.numBuffers
-
-	// Initialize buffer offsets array (in float32 units, not bytes)
-	r.bufferOffsets = make([]int, r.numBuffers)
-	for i := 0; i < r.numBuffers; i++ {
-		r.bufferOffsets[i] = i * totalFloats
-	}
-
-	// Initialize sync objects array
-	r.syncObjects = make([]uintptr, r.numBuffers)
-	for i := 0; i < r.numBuffers; i++ {
-		r.syncObjects[i] = 0 // Will be initialized when first used
-	}
-
-	// Create the persistent mapped buffer
-	persistentVBO, err := openglhelper.NewPersistentBuffer(
-		gl.ARRAY_BUFFER,
-		totalBufferSize,
-		false, // read
-		true,  // write
-	)
+	// Create the triple-buffered persistent vertex buffer
+	tripleBuffer, err := openglhelper.NewTripleBuffer(gl.ARRAY_BUFFER, vertexBufferSize, numBuffers)
 	if err != nil {
-		return fmt.Errorf("failed to create persistent buffer: %w", err)
+		return fmt.Errorf("failed to create triple buffer: %w", err)
 	}
-	r.cubeVBO = persistentVBO
+	r.tripleBuffer = tripleBuffer
 
-	// Bind the persistent VBO to the VAO and set up attributes
-	r.cubeVAO.Bind()
-	r.cubeVBO.Bind()
+	// Bind the buffer
+	r.tripleBuffer.Buffer.Bind()
 
-	// Re-specify the vertex attributes for our new persistent buffer
-	r.cubeVAO.SetVertexAttribPointer(0, 3, gl.FLOAT, false, 9*4, 0)
-	r.cubeVAO.SetVertexAttribPointer(1, 3, gl.FLOAT, false, 9*4, 3*4)
-	r.cubeVAO.SetVertexAttribPointer(2, 3, gl.FLOAT, false, 9*4, 6*4)
+	// Set up vertex attribute - we only have one attribute now (the packed uint32)
+	gl.VertexAttribIPointer(0, 1, gl.UNSIGNED_INT, 4, gl.PtrOffset(0))
+	gl.EnableVertexAttribArray(0)
 
-	// Get a Go slice that points to the mapped memory
-	mappedPtr := r.cubeVBO.GetMappedPointer()
-	if mappedPtr == nil {
-		return fmt.Errorf("failed to get mapped pointer")
-	}
+	// Setup indices for quads
+	// For each quad, we need 6 indices to form 2 triangles
+	// Create a pattern that's reused for all quads: [0,1,2, 0,2,3, 4,5,6, 4,6,7, ...]
+	const maxQuads = maxQuadsPerChunk * numBuffers // Across all buffers
+	indices := make([]uint32, maxQuads*6)
 
-	// Create a slice that refers to the mapped memory
-	r.mappedMemory = unsafe.Slice((*float32)(mappedPtr), totalFloats*r.numBuffers)
+	for i := uint32(0); i < uint32(maxQuads); i++ {
+		// Calculate base vertex index for this quad
+		baseVertex := i * 4
+		// Index into the indices array
+		idxBase := i * 6
 
-	// Initialize all buffer sections with the cube data
-	// Create a temporary slice for cube vertex data
-	vertexData := make([]float32, totalFloats)
+		// First triangle: 0,1,2
+		indices[idxBase] = baseVertex
+		indices[idxBase+1] = baseVertex + 1
+		indices[idxBase+2] = baseVertex + 2
 
-	// Generate initial vertex data for all cubes
-	for i := 0; i < r.numCubes; i++ {
-		baseIdx := i * floatsPerCube
-
-		// Copy the template cube into the cube's vertex data
-		for v := 0; v < verticesPerCube; v++ {
-			for j := 0; j < floatsPerVertex; j++ {
-				vertexData[baseIdx+v*floatsPerVertex+j] = baseCubeVertices[v*floatsPerVertex+j]
-			}
-		}
-
-		// Apply position and color
-		pos := r.positions[i]
-		color := r.colors[i]
-
-		for v := 0; v < verticesPerCube; v++ {
-			vertexBase := baseIdx + v*floatsPerVertex
-
-			// Update position for this vertex
-			vertexData[vertexBase] += pos[0]
-			vertexData[vertexBase+1] += pos[1]
-			vertexData[vertexBase+2] += pos[2]
-
-			// Set color for this vertex
-			vertexData[vertexBase+6] = color[0]
-			vertexData[vertexBase+7] = color[1]
-			vertexData[vertexBase+8] = color[2]
-		}
+		// Second triangle: 0,2,3
+		indices[idxBase+3] = baseVertex
+		indices[idxBase+4] = baseVertex + 2
+		indices[idxBase+5] = baseVertex + 3
 	}
 
-	// Copy the initial vertex data to all buffer sections
-	for i := 0; i < r.numBuffers; i++ {
-		copy(r.mappedMemory[r.bufferOffsets[i]:r.bufferOffsets[i]+totalFloats], vertexData)
-	}
+	// Create an Element Buffer Object for indices
+	r.indicesBuffer = openglhelper.NewEBO(indices, openglhelper.StaticDraw)
 
-	r.cubeVAO.Unbind()
+	// Setup indirect drawing command buffer
+	r.maxDrawCommands = 1024 // Support up to 1024 chunks
+	r.drawCommands = make([]openglhelper.DrawElementsIndirectCommand, r.maxDrawCommands)
+	r.chunkPositions = make([]mgl32.Vec4, r.maxDrawCommands)
+
+	// Create the indirect command buffer using the helper
+	r.indirectBuffer = openglhelper.NewIndirectBuffer(r.maxDrawCommands, openglhelper.DynamicDraw)
+
+	// Create and setup the chunk positions buffer (Shader Storage Buffer Object)
+	positionsBufferSize := r.maxDrawCommands * int(unsafe.Sizeof(mgl32.Vec4{}))
+	r.chunkPositionsBuffer = openglhelper.NewEmptySSBO(positionsBufferSize, openglhelper.DynamicDraw)
+
+	// Bind the SSBO to the binding point used in the shader
+	r.chunkPositionsBuffer.BindBase(0)
 
 	return nil
 }
 
-// initializeCubeData sets up the initial positions, colors, and color phases for all cubes
-func (r *Renderer) initializeCubeData() {
-	// Initialize arrays
-	r.positions = make([]mgl32.Vec3, r.numCubes)
-	r.velocities = make([]mgl32.Vec3, r.numCubes)
-	r.colors = make([]mgl32.Vec3, r.numCubes)
-	r.colorPhase = make([]float32, r.numCubes)
-
-	// Create cubes in a volume
-	bounds := float32(30.0)
-	rand.Seed(42) // Use fixed seed for reproducibility
-
-	for i := 0; i < r.numCubes; i++ {
-		// Random position within the bounds
-		r.positions[i] = mgl32.Vec3{
-			(rand.Float32()*2.0 - 1.0) * bounds * 0.9,
-			(rand.Float32()*2.0 - 1.0) * bounds * 0.9,
-			(rand.Float32()*2.0 - 1.0) * bounds * 0.9,
-		}
-
-		// Keep velocities for future use
-		r.velocities[i] = mgl32.Vec3{
-			(rand.Float32()*2.0 - 1.0) * 0.8,
-			(rand.Float32()*2.0 - 1.0) * 0.8,
-			(rand.Float32()*2.0 - 1.0) * 0.8,
-		}
-
-		// Initial color (bright)
-		r.colors[i] = mgl32.Vec3{
-			rand.Float32()*0.5 + 0.5, // 0.5-1.0
-			rand.Float32()*0.5 + 0.5, // 0.5-1.0
-			rand.Float32()*0.5 + 0.5, // 0.5-1.0
-		}
-
-		// Random phase offset for color cycling (0.0 - 1.0)
-		r.colorPhase[i] = rand.Float32()
-	}
+// SetCameraPosition sets the camera position in world space
+func (r *Renderer) SetCameraPosition(position mgl32.Vec3) {
+	r.camera.SetPosition(position)
 }
 
-// createFenceSync creates a fence sync object to track when the GPU is done using a buffer
-func (r *Renderer) createFenceSync(bufferIdx int) {
-	// Delete any existing sync object
-	if r.syncObjects[bufferIdx] != 0 {
-		gl.DeleteSync(r.syncObjects[bufferIdx])
-	}
-
-	// Create a new sync object
-	r.syncObjects[bufferIdx] = gl.FenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)
+// SetCameraLookAt makes the camera look at a target position
+func (r *Renderer) SetCameraLookAt(target mgl32.Vec3) {
+	r.camera.LookAt(target)
 }
 
-// waitForSync waits until the GPU has finished using the buffer at the given index
-func (r *Renderer) waitForSync(bufferIdx int) {
-	// Early exit if no sync object exists
-	if r.syncObjects[bufferIdx] == 0 {
-		return
-	}
-
-	const timeout uint64 = 1000000000 // 1 second in nanoseconds
-
-	for {
-		waitReturn := gl.ClientWaitSync(r.syncObjects[bufferIdx], gl.SYNC_FLUSH_COMMANDS_BIT, timeout)
-		if waitReturn == gl.ALREADY_SIGNALED || waitReturn == gl.CONDITION_SATISFIED {
-			// Sync is complete, we can proceed
-			return
-		} else if waitReturn == gl.WAIT_FAILED {
-			// Something went wrong, but we'll proceed anyway to avoid deadlock
-			return
-		} else if waitReturn == gl.TIMEOUT_EXPIRED {
-			// Timeout occurred, but we'll proceed to avoid deadlock
-			return
-		}
-	}
-}
-
-// updateThread continuously updates cube colors in a separate thread
-func (r *Renderer) updateThread() {
-	for {
-		// Check if we should quit
-		select {
-		case <-r.updateQuitChan:
-			return
-		default:
-			// Continue execution
-		}
-
-		// Wait a bit to avoid busy waiting if there's nothing to do
-		if !r.isUpdateThreadBusy {
-			time.Sleep(1 * time.Millisecond)
-			continue
-		}
-
-		// Get state information (under mutex protection)
-		r.updateMutex.Lock()
-		bufferIdx := r.updateBufferIdx
-		startIdx := r.currentBatchIndex
-		endIdx := startIdx + r.cubesPerBatch
-		if endIdx > r.numCubes {
-			endIdx = r.numCubes
-		}
-		totalTime := r.totalTime
-		bufferOffset := r.bufferOffsets[bufferIdx]
-		r.updateMutex.Unlock()
-
-		// Calculate update parameters
-		floatsPerVertex := 9
-		verticesPerCube := 24
-		floatsPerCube := floatsPerVertex * verticesPerCube
-
-		// Update only the current batch of cubes
-		for i := startIdx; i < endIdx; i++ {
-			// Calculate a cycling color based on time and phase
-			phase := r.colorPhase[i]
-			cyclePos := float32(math.Mod(float64(totalTime/r.colorCycleTime)+float64(phase), 1.0))
-
-			// Create a flowing rainbow effect
-			red := float32(0.5 + 0.5*math.Sin(float64(cyclePos*2*math.Pi)))
-			green := float32(0.5 + 0.5*math.Sin(float64(cyclePos*2*math.Pi+2*math.Pi/3)))
-			blue := float32(0.5 + 0.5*math.Sin(float64(cyclePos*2*math.Pi+4*math.Pi/3)))
-
-			// Update the color directly in the main thread's array
-			r.colors[i] = mgl32.Vec3{red, green, blue}
-
-			// Update this cube's vertices in the mapped memory
-			baseIdx := i*floatsPerCube + bufferOffset
-
-			// Update each vertex for this cube
-			for v := 0; v < verticesPerCube; v++ {
-				vIdx := baseIdx + v*floatsPerVertex
-
-				// Update just the color component - directly write to GPU memory
-				r.mappedMemory[vIdx+6] = red
-				r.mappedMemory[vIdx+7] = green
-				r.mappedMemory[vIdx+8] = blue
-			}
-		}
-
-		// Store the results (under mutex protection)
-		r.updateMutex.Lock()
-		r.isUpdateThreadBusy = false
-		r.updatedBufferIdx = bufferIdx
-
-		// Move to the next batch for the next frame
-		r.currentBatchIndex = endIdx
-		if r.currentBatchIndex >= r.numCubes {
-			r.currentBatchIndex = 0
-		}
-		r.updateMutex.Unlock()
-	}
-}
-
-// updateCubes schedules an update for a batch of cubes on the update thread
-func (r *Renderer) updateCubes() {
-	r.updateMutex.Lock()
-	defer r.updateMutex.Unlock()
-
-	// If update thread is busy, wait for it to complete
-	if r.isUpdateThreadBusy {
-		return
-	}
-
-	// Get the next buffer index to update (the one not currently in use by the GPU)
-	// Skip the current buffer and the one that was just rendered
-	nextBufferIdx := (r.currentBufferIdx + 1) % r.numBuffers
-	if nextBufferIdx == r.updatedBufferIdx {
-		nextBufferIdx = (nextBufferIdx + 1) % r.numBuffers
-	}
-
-	// Set up the update task for the update thread
-	r.isUpdateThreadBusy = true
-	r.updateBufferIdx = nextBufferIdx
-	r.lastUpdateTime = time.Now()
-}
-
-// render renders the scene with the current buffer section
-func (r *Renderer) render() {
-	// Clear the screen
-	r.window.Clear()
-
-	// Enable depth testing for proper 3D rendering
-	gl.Enable(gl.DEPTH_TEST)
-
-	// Use our shader
-	r.cubeShader.Use()
-
-	// Set up view and projection matrices
-	view := r.camera.ViewMatrix()
-	projection := r.camera.ProjectionMatrix()
-	r.cubeShader.SetMat4("view", view)
-	r.cubeShader.SetMat4("projection", projection)
-
-	// Set up lighting parameters
-	r.cubeShader.SetVec3("viewPos", r.camera.Position())
-	r.cubeShader.SetVec3("lightPos", mgl32.Vec3{30.0, 30.0, 30.0})
-	r.cubeShader.SetVec3("lightColor", mgl32.Vec3{1.0, 1.0, 1.0})
-
-	// Set model matrix (identity since we're transforming vertices directly)
-	r.cubeShader.SetMat4("model", mgl32.Ident4())
-
-	// Bind the VAO
-	r.cubeVAO.Bind()
-
-	// If we have an updated buffer from the worker, use that
-	// Otherwise, use the current buffer
-	renderBufferIdx := r.currentBufferIdx
-	if r.updatedBufferIdx >= 0 {
-		renderBufferIdx = r.updatedBufferIdx
-		r.updatedBufferIdx = -1 // Mark as used
-	}
-
-	// Calculate buffer offset in bytes for the current buffer section
-	bufferOffsetBytes := r.bufferOffsets[renderBufferIdx] * 4 // Convert from floats to bytes
-
-	// Update attribute pointers to point to the current buffer section
-	gl.BindBuffer(gl.ARRAY_BUFFER, r.cubeVBO.ID)
-	stride := int32(9 * 4) // 9 floats per vertex, 4 bytes per float
-
-	// Position attribute
-	gl.VertexAttribPointer(0, 3, gl.FLOAT, false, stride, gl.PtrOffset(bufferOffsetBytes))
-
-	// Normal attribute
-	gl.VertexAttribPointer(1, 3, gl.FLOAT, false, stride, gl.PtrOffset(bufferOffsetBytes+3*4))
-
-	// Color attribute
-	gl.VertexAttribPointer(2, 3, gl.FLOAT, false, stride, gl.PtrOffset(bufferOffsetBytes+6*4))
-
-	// Bind element buffer
-	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, r.cubeEBO.ID)
-
-	// Draw all cubes
-	gl.DrawElements(gl.TRIANGLES, int32(r.numCubes*36), gl.UNSIGNED_INT, gl.PtrOffset(0))
-
-	// Advance to the next buffer section for the next frame
-	r.currentBufferIdx = (r.currentBufferIdx + 1) % r.numBuffers
-}
-
-// Run starts the main rendering loop
-func (r *Renderer) Run() {
+// Run starts the main rendering loop with the provided chunks
+func (r *Renderer) Run(chunks []*voxel.Chunk) {
 	// Set up initial OpenGL state
 	gl.Enable(gl.DEPTH_TEST)
 	gl.DepthFunc(gl.LESS)
@@ -533,11 +187,16 @@ func (r *Renderer) Run() {
 		// Process input
 		r.camera.ProcessKeyboardInput(r.deltaTime, r.window)
 
-		// Update cube colors and write to the next buffer section
-		r.updateCubes()
+		// Clear the screen
+		r.window.Clear()
 
-		// Render using the available buffer section
-		r.render()
+		// Enable depth testing for proper 3D rendering
+		gl.Enable(gl.DEPTH_TEST)
+
+		// Render all chunks using multi-draw indirect
+		if len(chunks) > 0 {
+			r.RenderChunksIndirect(chunks)
+		}
 
 		// Swap buffers and poll events
 		r.window.SwapBuffers()
@@ -548,80 +207,38 @@ func (r *Renderer) Run() {
 	r.Cleanup()
 }
 
-// Cleanup frees all resources
+// Cleanup releases all resources used by the renderer
 func (r *Renderer) Cleanup() {
-	// Signal update thread to exit
-	if !r.isClosed {
-		r.isClosed = true
-		close(r.updateQuitChan)
-	}
-
-	// Clean up sync objects
-	for i := 0; i < r.numBuffers; i++ {
-		if r.syncObjects[i] != 0 {
-			gl.DeleteSync(r.syncObjects[i])
-			r.syncObjects[i] = 0
-		}
+	if r.isClosed {
+		return
 	}
 
 	// Clean up OpenGL resources
-	if r.cubeVBO != nil {
-		r.cubeVBO.Unmap()
-		r.cubeVBO.Delete()
+	if r.tripleBuffer != nil {
+		r.tripleBuffer.Cleanup()
 	}
 
-	if r.cubeEBO != nil {
-		r.cubeEBO.Delete()
+	if r.indicesBuffer != nil {
+		r.indicesBuffer.Delete()
 	}
 
 	if r.cubeVAO != nil {
 		r.cubeVAO.Delete()
 	}
 
-	// Close window
-	r.window.Close()
-}
-
-// createCubeIndices creates indices for all cubes
-func (r *Renderer) createCubeIndices() []uint32 {
-	totalIndices := r.numCubes * 6 * 6 // 6 faces per cube, 2 triangles per face (3 indices per triangle)
-	indices := make([]uint32, totalIndices)
-
-	// Create index buffer for all cubes
-	// Each cube has 24 vertices (4 vertices per face * 6 faces)
-	for i := 0; i < r.numCubes; i++ {
-		baseVertex := uint32(i * 24) // Base vertex index for this cube
-		baseIndex := i * 36          // Base index for this cube (6 faces * 6 indices)
-
-		// For each face of the cube (6 faces)
-		for face := 0; face < 6; face++ {
-			faceBaseVertex := baseVertex + uint32(face*4) // Base vertex for this face
-			faceBaseIndex := baseIndex + face*6           // Base index for this face
-
-			// Define winding order based on which face we're processing
-			if face == 1 || face == 3 || face == 5 {
-				// Back, Right, and Top faces need reversed winding
-				indices[faceBaseIndex] = faceBaseVertex       // 0
-				indices[faceBaseIndex+1] = faceBaseVertex + 2 // 2
-				indices[faceBaseIndex+2] = faceBaseVertex + 1 // 1
-
-				indices[faceBaseIndex+3] = faceBaseVertex     // 0
-				indices[faceBaseIndex+4] = faceBaseVertex + 3 // 3
-				indices[faceBaseIndex+5] = faceBaseVertex + 2 // 2
-			} else {
-				// Front, Left, and Bottom faces keep original winding
-				indices[faceBaseIndex] = faceBaseVertex       // 0
-				indices[faceBaseIndex+1] = faceBaseVertex + 1 // 1
-				indices[faceBaseIndex+2] = faceBaseVertex + 2 // 2
-
-				indices[faceBaseIndex+3] = faceBaseVertex     // 0
-				indices[faceBaseIndex+4] = faceBaseVertex + 2 // 2
-				indices[faceBaseIndex+5] = faceBaseVertex + 3 // 3
-			}
-		}
+	// Clean up multi-draw indirect resources
+	if r.indirectBuffer != nil {
+		r.indirectBuffer.Delete()
 	}
 
-	return indices
+	if r.chunkPositionsBuffer != nil {
+		r.chunkPositionsBuffer.Delete()
+	}
+
+	// Close window
+	r.window.Close()
+
+	r.isClosed = true
 }
 
 // Callback functions
@@ -655,4 +272,209 @@ func (r *Renderer) scrollCallback(_ *glfw.Window, xoffset, yoffset float64) {
 func (r *Renderer) framebufferSizeCallback(_ *glfw.Window, width, height int) {
 	r.window.OnResize(width, height)
 	r.camera.UpdateProjectionMatrix(width, height)
+}
+
+// RenderChunk renders a voxel chunk using the packed vertex format
+func (r *Renderer) RenderChunk(chunk *voxel.Chunk) {
+	if chunk.Mesh == nil || len(chunk.Mesh.PackedVertices) == 0 {
+		return // Nothing to render
+	}
+
+	// Ensure we have the persistent buffer set up
+	r.cubeVAO.Bind()
+	r.tripleBuffer.Buffer.Bind()
+
+	// Wait for the current buffer to be ready
+	r.tripleBuffer.WaitForSync()
+
+	// Get the number of vertices to render
+	vertexCount := len(chunk.Mesh.PackedVertices)
+	if vertexCount == 0 {
+		return
+	}
+
+	// Get the offset for the current buffer section
+	offset := r.tripleBuffer.CurrentOffsetFloats()
+
+	// Copy the vertices directly to the mapped uint32 slice
+	copy(r.tripleBuffer.MappedUints[offset:offset+vertexCount], chunk.Mesh.PackedVertices)
+
+	// Use the shader
+	r.cubeShader.Use()
+
+	// Set up view and projection matrices
+	view := r.camera.ViewMatrix()
+	projection := r.camera.ProjectionMatrix()
+	r.cubeShader.SetMat4("view", view)
+	r.cubeShader.SetMat4("projection", projection)
+
+	// Set chunk position
+	chunkWorldPos := chunk.WorldPosition()
+	r.cubeShader.SetVec3("chunkPosition", chunkWorldPos)
+
+	// Set up lighting parameters
+	r.cubeShader.SetVec3("viewPos", r.camera.Position())
+	r.cubeShader.SetVec3("lightPos", mgl32.Vec3{30.0, 30.0, 30.0})
+	r.cubeShader.SetVec3("lightColor", mgl32.Vec3{1.0, 1.0, 1.0})
+
+	// Set model matrix (identity for now, position is handled through chunkPosition uniform)
+	r.cubeShader.SetMat4("model", mgl32.Ident4())
+
+	// Calculate buffer offset in bytes for the current buffer section
+	bufferOffsetBytes := r.tripleBuffer.CurrentOffsetBytes()
+
+	// Update attribute pointer to point to the current buffer section
+	gl.VertexAttribIPointer(0, 1, gl.UNSIGNED_INT, 4, gl.PtrOffset(bufferOffsetBytes))
+
+	// Draw the quads (each quad has 4 vertices)
+	gl.DrawArrays(gl.QUADS, 0, int32(vertexCount))
+
+	// Create sync object for this buffer
+	r.tripleBuffer.CreateFenceSync()
+
+	// Advance to the next buffer section for the next frame
+	r.tripleBuffer.Advance()
+}
+
+// UpdateDrawCommands updates the indirect drawing commands buffer for all renderable chunks
+func (r *Renderer) UpdateDrawCommands(chunks []*voxel.Chunk) {
+	// Reset current count
+	r.currentDrawCommands = 0
+
+	// Early exit if no chunks
+	if len(chunks) == 0 {
+		return
+	}
+
+	// Limit to max commands
+	chunkCount := len(chunks)
+	if chunkCount > r.maxDrawCommands {
+		chunkCount = r.maxDrawCommands
+	}
+
+	// Fill commands
+	totalQuads := 0
+	for i := 0; i < chunkCount; i++ {
+		chunk := chunks[i]
+
+		// Skip chunks with no mesh or no packed vertices
+		if chunk == nil || chunk.Mesh == nil || len(chunk.Mesh.PackedVertices) == 0 {
+			continue
+		}
+
+		// Calculate number of quads in this chunk
+		quads := len(chunk.Mesh.PackedVertices) / 4
+		if quads == 0 {
+			continue
+		}
+
+		// Create command
+		cmd := &r.drawCommands[r.currentDrawCommands]
+
+		// Fill command data
+		cmd.Count = uint32(quads * 6)           // 6 indices per quad
+		cmd.InstanceCount = 1                   // No instancing
+		cmd.FirstIndex = uint32(totalQuads * 6) // Offset into index buffer
+		cmd.BaseVertex = int32(totalQuads * 4)  // Offset into vertex buffer
+		cmd.BaseInstance = 0                    // No instancing
+
+		// Store the chunk position in the chunk positions array
+		worldPos := chunk.WorldPosition()
+		r.chunkPositions[r.currentDrawCommands] = mgl32.Vec4{worldPos.X(), worldPos.Y(), worldPos.Z(), 0.0}
+
+		// Increment counters
+		totalQuads += quads
+		r.currentDrawCommands++
+	}
+
+	// Update the draw commands buffer if we have commands
+	if r.currentDrawCommands > 0 {
+		// Update indirect command buffer using the helper method
+		r.indirectBuffer.UpdateIndirectCommands(r.drawCommands[:r.currentDrawCommands])
+
+		// Update chunk positions buffer
+		r.chunkPositionsBuffer.Bind()
+		positionsBufferSize := r.currentDrawCommands * int(unsafe.Sizeof(mgl32.Vec4{}))
+		gl.BufferSubData(gl.SHADER_STORAGE_BUFFER, 0, positionsBufferSize, gl.Ptr(r.chunkPositions))
+	}
+}
+
+// RenderChunksIndirect renders all chunks using multidrawindirect
+func (r *Renderer) RenderChunksIndirect(chunks []*voxel.Chunk) {
+	// Skip if no commands
+	if r.currentDrawCommands == 0 {
+		return
+	}
+
+	// Ensure we have the persistent buffer set up
+	r.cubeVAO.Bind()
+	r.tripleBuffer.Buffer.Bind()
+	r.indicesBuffer.Bind()
+
+	// Wait for the current buffer to be ready
+	r.tripleBuffer.WaitForSync()
+
+	// Copy all chunk vertex data to the persistent buffer
+	currentOffset := 0
+
+	// Copy vertices from each chunk
+	for _, chunk := range chunks {
+		if chunk == nil || chunk.Mesh == nil || len(chunk.Mesh.PackedVertices) == 0 {
+			continue
+		}
+
+		vertexCount := len(chunk.Mesh.PackedVertices)
+
+		// Skip if would exceed buffer
+		if currentOffset+vertexCount >= r.tripleBuffer.BufferSize/4 {
+			break
+		}
+
+		// Copy vertices directly to mapped memory
+		copy(r.tripleBuffer.MappedUints[r.tripleBuffer.CurrentOffsetFloats()+currentOffset:], chunk.Mesh.PackedVertices)
+
+		currentOffset += vertexCount
+	}
+
+	// Use the shader
+	r.cubeShader.Use()
+
+	// Set up view and projection matrices
+	view := r.camera.ViewMatrix()
+	projection := r.camera.ProjectionMatrix()
+	r.cubeShader.SetMat4("view", view)
+	r.cubeShader.SetMat4("projection", projection)
+
+	// Set up lighting parameters
+	r.cubeShader.SetVec3("viewPos", r.camera.Position())
+	r.cubeShader.SetVec3("lightPos", mgl32.Vec3{30.0, 30.0, 30.0})
+	r.cubeShader.SetVec3("lightColor", mgl32.Vec3{1.0, 1.0, 1.0})
+
+	// Set model matrix (identity for now)
+	r.cubeShader.SetMat4("model", mgl32.Ident4())
+
+	// Set a global chunk position (will be overridden by vertex shader)
+	r.cubeShader.SetVec3("chunkPosition", mgl32.Vec3{0, 0, 0})
+
+	// Calculate buffer offset in bytes for the current buffer section
+	bufferOffsetBytes := r.tripleBuffer.CurrentOffsetBytes()
+
+	// Update attribute pointer to point to the current buffer section
+	gl.VertexAttribIPointer(0, 1, gl.UNSIGNED_INT, 4, gl.PtrOffset(bufferOffsetBytes))
+
+	// Bind the indirect buffer
+	r.indirectBuffer.Bind()
+
+	// Draw all chunks in a single call using multidrawindirect
+	openglhelper.MultiDrawElementsIndirect(
+		gl.TRIANGLES,
+		gl.UNSIGNED_INT,
+		r.currentDrawCommands,
+	)
+
+	// Create fence sync for this buffer
+	r.tripleBuffer.CreateFenceSync()
+
+	// Advance to the next buffer section
+	r.tripleBuffer.Advance()
 }

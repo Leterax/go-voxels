@@ -43,6 +43,18 @@ type VertexArrayObject struct {
 	ID uint32
 }
 
+// DrawElementsIndirectCommand represents the structure for a single indirect draw command
+type DrawElementsIndirectCommand struct {
+	Count         uint32 // Number of indices to render
+	InstanceCount uint32 // Number of instances to render
+	FirstIndex    uint32 // Starting index in the index buffer
+	BaseVertex    int32  // Base vertex to add to each index
+	BaseInstance  uint32 // Base instance for instanced attributes
+}
+
+// Size of the DrawElementsIndirectCommand struct in bytes
+const DrawElementsIndirectCommandSize = 20 // 5 * 4 bytes
+
 // NewVBO creates a new Vertex Buffer Object
 func NewVBO(data []float32, usage BufferUsage) *BufferObject {
 	var vboID uint32
@@ -299,4 +311,202 @@ func (vao *VertexArrayObject) Delete() {
 func (vao *VertexArrayObject) SetVertexAttribPointer(index uint32, size int32, xtype uint32, normalized bool, stride int32, offset int) {
 	gl.VertexAttribPointer(index, size, xtype, normalized, stride, gl.PtrOffset(offset))
 	gl.EnableVertexAttribArray(index)
+}
+
+// NewIndirectBuffer creates a buffer for multi-draw indirect commands
+func NewIndirectBuffer(maxCommands int, usage BufferUsage) *BufferObject {
+	sizeInBytes := maxCommands * DrawElementsIndirectCommandSize
+
+	var bufferID uint32
+	gl.GenBuffers(1, &bufferID)
+
+	buffer := &BufferObject{
+		ID:    bufferID,
+		Type:  gl.DRAW_INDIRECT_BUFFER,
+		Size:  sizeInBytes,
+		Usage: uint32(usage),
+	}
+
+	buffer.Bind()
+	gl.BufferData(gl.DRAW_INDIRECT_BUFFER, buffer.Size, nil, buffer.Usage)
+
+	return buffer
+}
+
+// UpdateIndirectCommands updates the indirect buffer with an array of draw commands
+func (bo *BufferObject) UpdateIndirectCommands(commands []DrawElementsIndirectCommand) {
+	if bo.Type != gl.DRAW_INDIRECT_BUFFER {
+		panic("Buffer is not an indirect buffer")
+	}
+
+	bo.Bind()
+
+	// Calculate size in bytes
+	sizeInBytes := len(commands) * DrawElementsIndirectCommandSize
+
+	// Only update if we have commands and they fit in the buffer
+	if len(commands) > 0 && sizeInBytes <= bo.Size {
+		gl.BufferSubData(gl.DRAW_INDIRECT_BUFFER, 0, sizeInBytes, gl.Ptr(commands))
+	}
+}
+
+// NewPackedVertexBuffer creates a VBO specifically for packed vertices (uint32 format)
+func NewPackedVertexBuffer(vertices []uint32, usage BufferUsage) *BufferObject {
+	var vboID uint32
+	gl.GenBuffers(1, &vboID)
+
+	vbo := &BufferObject{
+		ID:    vboID,
+		Type:  gl.ARRAY_BUFFER,
+		Size:  4 * len(vertices), // uint32 = 4 bytes
+		Usage: uint32(usage),
+	}
+
+	vbo.Bind()
+	gl.BufferData(gl.ARRAY_BUFFER, vbo.Size, gl.Ptr(vertices), vbo.Usage)
+
+	return vbo
+}
+
+// MultiDrawElementsIndirect is a convenience function for drawing multiple batches
+// with a single call
+func MultiDrawElementsIndirect(mode uint32, indexType uint32, commandCount int) {
+	gl.MultiDrawElementsIndirect(mode, indexType, nil, int32(commandCount), 0)
+}
+
+// TripleBuffer manages a triple-buffered persistent buffer for efficient CPU-GPU data transfer
+type TripleBuffer struct {
+	Buffer           *BufferObject  // The underlying buffer object
+	NumBuffers       int            // Number of buffer sections (typically 3)
+	BufferSize       int            // Size of each buffer section in bytes
+	CurrentBufferIdx int            // Index of the buffer section currently being written to
+	BufferOffsets    []int          // Offsets for each buffer section in float32 units
+	SyncObjects      []uintptr      // Fence sync objects for each buffer section
+	MappedMemory     unsafe.Pointer // Pointer to the mapped memory
+	MappedFloats     []float32      // Go slice backed by persistent mapped memory (as float32)
+	MappedUints      []uint32       // Go slice backed by persistent mapped memory (as uint32)
+}
+
+// NewTripleBuffer creates a new triple-buffered persistent buffer
+func NewTripleBuffer(bufferType uint32, sectionSizeBytes int, numBuffers int) (*TripleBuffer, error) {
+	if numBuffers < 2 {
+		numBuffers = 2 // At least double buffering
+	}
+
+	totalSize := sectionSizeBytes * numBuffers
+
+	// Create the persistent buffer
+	buffer, err := NewPersistentBuffer(bufferType, totalSize, false, true)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create the triple buffer
+	tb := &TripleBuffer{
+		Buffer:           buffer,
+		NumBuffers:       numBuffers,
+		BufferSize:       sectionSizeBytes,
+		CurrentBufferIdx: 0,
+		BufferOffsets:    make([]int, numBuffers),
+		SyncObjects:      make([]uintptr, numBuffers),
+		MappedMemory:     buffer.MappedPtr,
+	}
+
+	// Calculate offsets for each buffer section
+	for i := 0; i < numBuffers; i++ {
+		tb.BufferOffsets[i] = i * (sectionSizeBytes / 4) // Convert bytes to float32/uint32 offset
+	}
+
+	// Create slices that view the mapped memory
+	tb.MappedFloats = unsafe.Slice((*float32)(tb.MappedMemory), totalSize/4)
+	tb.MappedUints = unsafe.Slice((*uint32)(tb.MappedMemory), totalSize/4)
+
+	return tb, nil
+}
+
+// CurrentOffsetFloats returns the offset of the current buffer section in float32 units
+func (tb *TripleBuffer) CurrentOffsetFloats() int {
+	return tb.BufferOffsets[tb.CurrentBufferIdx]
+}
+
+// CurrentOffsetBytes returns the offset of the current buffer section in bytes
+func (tb *TripleBuffer) CurrentOffsetBytes() int {
+	return tb.BufferOffsets[tb.CurrentBufferIdx] * 4
+}
+
+// WaitForSync waits until the GPU has finished using the current buffer section
+func (tb *TripleBuffer) WaitForSync() {
+	// Early exit if no sync object exists
+	if tb.SyncObjects[tb.CurrentBufferIdx] == 0 {
+		return
+	}
+
+	const timeout uint64 = 1000000000 // 1 second in nanoseconds
+
+	for {
+		waitReturn := gl.ClientWaitSync(tb.SyncObjects[tb.CurrentBufferIdx], gl.SYNC_FLUSH_COMMANDS_BIT, timeout)
+		if waitReturn == gl.ALREADY_SIGNALED || waitReturn == gl.CONDITION_SATISFIED {
+			// Sync is complete, we can proceed
+			return
+		} else if waitReturn == gl.WAIT_FAILED {
+			// Something went wrong, but we'll proceed anyway to avoid deadlock
+			return
+		} else if waitReturn == gl.TIMEOUT_EXPIRED {
+			// Timeout occurred, but we'll proceed to avoid deadlock
+			return
+		}
+	}
+}
+
+// CreateFenceSync creates a fence sync object for the current buffer
+func (tb *TripleBuffer) CreateFenceSync() {
+	// Delete any existing sync object
+	if tb.SyncObjects[tb.CurrentBufferIdx] != 0 {
+		gl.DeleteSync(tb.SyncObjects[tb.CurrentBufferIdx])
+	}
+
+	// Create a new sync object
+	tb.SyncObjects[tb.CurrentBufferIdx] = gl.FenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)
+}
+
+// Advance moves to the next buffer section
+func (tb *TripleBuffer) Advance() {
+	tb.CurrentBufferIdx = (tb.CurrentBufferIdx + 1) % tb.NumBuffers
+}
+
+// WriteFloats writes float32 data to the current buffer section
+func (tb *TripleBuffer) WriteFloats(data []float32, offsetInSection int) {
+	if offsetInSection+len(data) > tb.BufferSize/4 {
+		panic("data would exceed buffer section size")
+	}
+
+	baseOffset := tb.BufferOffsets[tb.CurrentBufferIdx] + offsetInSection
+	copy(tb.MappedFloats[baseOffset:baseOffset+len(data)], data)
+}
+
+// WriteUints writes uint32 data to the current buffer section
+func (tb *TripleBuffer) WriteUints(data []uint32, offsetInSection int) {
+	if offsetInSection+len(data) > tb.BufferSize/4 {
+		panic("data would exceed buffer section size")
+	}
+
+	baseOffset := tb.BufferOffsets[tb.CurrentBufferIdx] + offsetInSection
+	copy(tb.MappedUints[baseOffset:baseOffset+len(data)], data)
+}
+
+// Cleanup releases all resources
+func (tb *TripleBuffer) Cleanup() {
+	// Delete sync objects
+	for i, sync := range tb.SyncObjects {
+		if sync != 0 {
+			gl.DeleteSync(sync)
+			tb.SyncObjects[i] = 0
+		}
+	}
+
+	// Delete buffer
+	if tb.Buffer != nil {
+		tb.Buffer.Delete()
+		tb.Buffer = nil
+	}
 }

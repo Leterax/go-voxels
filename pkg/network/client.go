@@ -7,35 +7,13 @@ import (
 	"math"
 	"net"
 	"strings"
+
+	"github.com/go-voxels/pkg/voxel"
 )
 
 const (
 	ServerPort = 20000
 	ChunkSize  = 16
-)
-
-// BlockType represents the different types of blocks in the game
-type BlockType uint8
-
-const (
-	Air BlockType = iota
-	Grass
-	Dirt
-	Stone
-	OakLog
-	OakLeaves
-	Glass
-	Water
-	Sand
-	Snow
-	OakPlanks
-	StoneBricks
-	Netherrack
-	GoldBlock
-	PackedIce
-	Lava
-	Barrel
-	Bookshelf
 )
 
 // ClientBound packet IDs
@@ -68,8 +46,8 @@ type Client struct {
 	OnEntityAdd      func(entityID uint32, x, y, z, yaw, pitch float32, name string)
 	OnEntityRemove   func(entityID uint32)
 	OnEntityUpdate   func(entityID uint32, x, y, z, yaw, pitch float32)
-	OnChunkReceive   func(x, y, z int32, blocks []BlockType)
-	OnMonoChunk      func(x, y, z int32, blockType BlockType)
+	OnChunkReceive   func(x, y, z int32, blocks []voxel.BlockType)
+	OnMonoChunk      func(x, y, z int32, blockType voxel.BlockType)
 	OnChat           func(message string)
 	OnEntityMetadata func(entityID uint32, name string)
 }
@@ -142,7 +120,7 @@ func (c *Client) SendUpdateEntity(x, y, z, yaw, pitch float32) error {
 }
 
 // SendUpdateBlock sends a block update to the server
-func (c *Client) SendUpdateBlock(blockType BlockType, x, y, z int32) error {
+func (c *Client) SendUpdateBlock(blockType voxel.BlockType, x, y, z int32) error {
 	// Packet structure: id(U8) + blockType(U8) + x(I32) + y(I32) + z(I32)
 	packet := make([]byte, 1+1+4*3)
 	packet[0] = PacketIDUpdateBlock
@@ -202,7 +180,7 @@ func (c *Client) SendChat(message string) error {
 
 // BlockUpdate represents a single block update
 type BlockUpdate struct {
-	BlockType BlockType
+	BlockType voxel.BlockType
 	X, Y, Z   int32
 }
 
@@ -386,9 +364,9 @@ func (c *Client) handleSendChunk() error {
 	}
 
 	// Convert to BlockType slice
-	blocks := make([]BlockType, chunkDataSize)
+	blocks := make([]voxel.BlockType, chunkDataSize)
 	for i := 0; i < chunkDataSize; i++ {
-		blocks[i] = BlockType(chunkData[i])
+		blocks[i] = voxel.BlockType(chunkData[i])
 	}
 
 	if c.OnChunkReceive != nil {
@@ -400,7 +378,7 @@ func (c *Client) handleSendChunk() error {
 
 func (c *Client) handleSendMonoTypeChunk() error {
 	var x, y, z int32
-	var blockType BlockType
+	var blockType voxel.BlockType
 
 	if err := binary.Read(c.conn, binary.BigEndian, &x); err != nil {
 		return fmt.Errorf("failed to read x: %w", err)
@@ -419,7 +397,7 @@ func (c *Client) handleSendMonoTypeChunk() error {
 	if err := binary.Read(c.conn, binary.BigEndian, &blockTypeByte); err != nil {
 		return fmt.Errorf("failed to read block type: %w", err)
 	}
-	blockType = BlockType(blockTypeByte)
+	blockType = voxel.BlockType(blockTypeByte)
 
 	if c.OnMonoChunk != nil {
 		c.OnMonoChunk(x, y, z, blockType)
