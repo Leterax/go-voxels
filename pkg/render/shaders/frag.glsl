@@ -3,7 +3,7 @@ out vec4 FragColor;
 
 in vec3 Normal;
 in vec3 FragPos;
-in vec2 TexCoord;
+in vec3 Color;
 
 uniform vec3 lightPos;
 uniform vec3 lightColor;
@@ -11,8 +11,8 @@ uniform vec3 viewPos;
 
 void main()
 {
-    // Use texture coordinates as color components
-    vec3 objectColor = vec3(TexCoord.x, TexCoord.y, (TexCoord.x + TexCoord.y) * 0.5);
+    // Use the vertex color directly
+    vec3 objectColor = Color;
 
     // ambient
     float ambientStrength = 0.2;  

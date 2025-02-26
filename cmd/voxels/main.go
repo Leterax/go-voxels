@@ -21,8 +21,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize renderer: %v", err)
 	}
-	
 
 	// Run the main loop
 	renderer.Run()
-}  
+}

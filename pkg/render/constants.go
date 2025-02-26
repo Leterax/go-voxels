@@ -26,17 +26,17 @@ const (
 	// Movement speeds
 	DefaultMoveSpeed   = 5.0
 	DefaultRotateSpeed = 0.1
-	
+
 	// Default orientation
-	DefaultYaw         = -90.0 // Facing -Z direction
-	DefaultPitch       = 0.0
-	
+	DefaultYaw   = -90.0 // Facing -Z direction
+	DefaultPitch = 0.0
+
 	// Field of view
-	DefaultFOV         = 45.0
-	MinFOV             = 1.0
-	MaxFOV             = 45.0
-	
+	DefaultFOV = 45.0
+	MinFOV     = 1.0
+	MaxFOV     = 45.0
+
 	// Constraints
-	MaxPitch           = 89.0
-	MinPitch           = -89.0
-) 
+	MaxPitch = 89.0
+	MinPitch = -89.0
+)

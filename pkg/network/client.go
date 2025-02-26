@@ -100,4 +100,4 @@ func (c *Client) IsConnected() bool {
 // GetServerAddr returns the server address
 func (c *Client) GetServerAddr() string {
 	return c.serverAddr
-} 
+}

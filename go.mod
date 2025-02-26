@@ -9,6 +9,6 @@ require (
 	openglhelper v0.0.0-00010101000000-000000000000
 )
 
-require github.com/go-gl/gl v0.0.0-20231021071112-07e5d0ea2e71 // indirect
+require github.com/go-gl/gl v0.0.0-20231021071112-07e5d0ea2e71
 
 replace openglhelper => ./internal/openglhelper
