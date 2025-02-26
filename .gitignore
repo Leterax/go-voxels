@@ -40,3 +40,6 @@ dist/
 
 # macOS specific
 .DS_Store
+
+
+effective_go.html
