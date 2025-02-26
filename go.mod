@@ -1,4 +1,4 @@
-module github.com/leterax/go-voxels
+module github.com/go-voxels
 
 go 1.24.0
 
@@ -9,6 +9,9 @@ require (
 	openglhelper v0.0.0-00010101000000-000000000000
 )
 
-require github.com/go-gl/gl v0.0.0-20231021071112-07e5d0ea2e71
+require (
+	github.com/go-gl/gl v0.0.0-20231021071112-07e5d0ea2e71
+	github.com/leterax/go-voxels v0.0.0-20250226175517-90e3bf10e591
+)
 
 replace openglhelper => ./internal/openglhelper
