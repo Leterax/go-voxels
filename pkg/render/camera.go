@@ -165,7 +165,7 @@ func (c *Camera) ProcessKeyboardInput(deltaTime float32, window *openglhelper.Wi
 
 	// Check if CTRL is pressed for speed boost (20x faster)
 	if window.GetKeyState(KeyLeftCtrl) == Press {
-		speed *= 20.0
+		speed *= 10.0
 	}
 
 	// Forward/Backward

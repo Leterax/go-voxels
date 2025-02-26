@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"math"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"github.com/go-gl/mathgl/mgl32"
+	"github.com/leterax/go-voxels/pkg/game"
+	"github.com/leterax/go-voxels/pkg/network"
 	"github.com/leterax/go-voxels/pkg/render"
 	"github.com/leterax/go-voxels/pkg/voxel"
 )
@@ -24,6 +27,12 @@ func init() {
 func main() {
 	fmt.Println("Starting Go-Voxels...")
 
+	// Parse command line flags
+	serverAddr := flag.String("server", "", "Server address (empty for singleplayer)")
+	playerName := flag.String("name", "Player", "Player name")
+	renderDist := flag.Int("renderdist", 8, "Render distance (in chunks)")
+	flag.Parse()
+
 	// Initialize the renderer
 	renderer, err := render.NewRenderer(800, 600, "Go-Voxels")
 	if err != nil {
@@ -34,11 +43,107 @@ func main() {
 	renderer.SetCameraPosition(mgl32.Vec3{0, 25, 35})
 	renderer.SetCameraLookAt(mgl32.Vec3{0, 0, 0})
 
-	// generate some chunks
-	chunks := generateWorld()
+	var chunkManager *game.ChunkManager
 
-	// Run the main loop
-	renderer.Run(chunks)
+	// Check if we should connect to a server
+	if *serverAddr != "" {
+		// Multiplayer mode - connect to the server
+		chunkManager = setupMultiplayerMode(renderer, *serverAddr, *playerName, uint8(*renderDist))
+
+		// Run the main loop with network chunk updates
+		runNetworkMode(renderer, chunkManager)
+	} else {
+		// Singleplayer mode - generate local world
+		chunks := generateWorld()
+
+		// Run the main loop with static chunks
+		renderer.Run(chunks)
+	}
+}
+
+// setupMultiplayerMode sets up the network client and chunk manager
+func setupMultiplayerMode(renderer *render.Renderer, serverAddr, playerName string, renderDist uint8) *game.ChunkManager {
+	fmt.Println("Connecting to server:", serverAddr)
+
+	// Connect to the server
+	client, err := network.NewClient(serverAddr)
+	if err != nil {
+		log.Fatalf("Failed to connect to server: %v", err)
+	}
+	fmt.Println("Connected to server")
+	// Set player name and render distance
+	client.SetEntityName(playerName)
+	client.SetRenderDistance(renderDist)
+
+	// Send initial metadata to the server
+	if err := client.SendClientMetadata(); err != nil {
+		log.Fatalf("Failed to send client metadata: %v", err)
+	}
+
+	// Create chunk manager to handle received chunks
+	chunkManager := game.NewChunkManager(client, renderDist)
+
+	// Start a goroutine to process network packets
+	go func() {
+		if err := client.ProcessPackets(); err != nil {
+			log.Printf("Network error: %v", err)
+		}
+	}()
+
+	return chunkManager
+}
+
+// runNetworkMode runs the game loop with network-received chunks
+func runNetworkMode(renderer *render.Renderer, chunkManager *game.ChunkManager) {
+	// Set up initial OpenGL state (similar to renderer.Run)
+	renderer.SetupOpenGL()
+
+	// Debug stats
+	var frameCount int
+	lastStatsTime := time.Now()
+
+	// Track if we need to update draw commands
+	haveChunksChanged := true
+
+	// Initial chunks and positions
+	var chunks []*voxel.Chunk
+
+	// Run the main loop, continuously getting the latest chunks from the ChunkManager
+	for !renderer.ShouldClose() {
+		// Get the latest chunks from the chunk manager only if needed
+		newChunksAvailable := chunkManager.HaveChunksChanged()
+
+		if newChunksAvailable {
+			chunks = chunkManager.GetChunks()
+			haveChunksChanged = true
+			fmt.Println("Chunks have changed, updating renderer...")
+		}
+
+		// Update debug stats once per second
+		frameCount++
+		if time.Since(lastStatsTime) >= time.Second {
+			fps := frameCount
+			chunkCount := len(chunks)
+
+			fmt.Printf("FPS: %d, Chunks: %d\n", fps, chunkCount)
+
+			lastStatsTime = time.Now()
+			frameCount = 0
+		}
+
+		// Only update draw commands when chunks have changed
+		if haveChunksChanged && len(chunks) > 0 {
+			renderer.UpdateDrawCommands(chunks)
+			haveChunksChanged = false
+		}
+
+		// Process one frame with the current chunks
+		renderer.RenderFrame(chunks)
+	}
+
+	// Clean up resources
+	chunkManager.Cleanup()
+	renderer.Cleanup()
 }
 
 func generateWorld() []*voxel.Chunk {

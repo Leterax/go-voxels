@@ -510,3 +510,53 @@ func (tb *TripleBuffer) Cleanup() {
 		tb.Buffer = nil
 	}
 }
+
+// CreatePersistentBuffer creates a buffer with persistent mapping and returns the mapped data
+// This allows accessing the buffer directly from CPU memory while GPU is using it
+func CreatePersistentBuffer(bufferType uint32, sizeInBytes int, flags uint32) (*BufferObject, []byte, error) {
+	var bufferID uint32
+	gl.GenBuffers(1, &bufferID)
+
+	buffer := &BufferObject{
+		ID:         bufferID,
+		Type:       bufferType,
+		Size:       sizeInBytes,
+		Persistent: true,
+	}
+
+	// Create buffer with storage
+	buffer.Bind()
+	gl.BufferStorage(bufferType, sizeInBytes, nil, flags)
+
+	// Map the buffer
+	buffer.Bind()
+	buffer.MappedPtr = gl.MapBufferRange(bufferType, 0, sizeInBytes, flags)
+
+	if buffer.MappedPtr == nil {
+		buffer.Delete()
+		return nil, nil, fmt.Errorf("failed to map buffer")
+	}
+
+	buffer.IsMapped = true
+
+	// Convert to []byte for Go access
+	mappedBytes := unsafe.Slice((*byte)(buffer.MappedPtr), sizeInBytes)
+
+	return buffer, mappedBytes, nil
+}
+
+// BytesToUint32 converts a byte slice to a uint32 slice
+// This is useful for working with mapped buffer memory
+func BytesToUint32(bytes []byte) []uint32 {
+	if len(bytes) == 0 {
+		return nil
+	}
+
+	// Ensure byte slice length is a multiple of 4
+	if len(bytes)%4 != 0 {
+		panic("byte slice length must be a multiple of 4 for uint32 conversion")
+	}
+
+	// Create a uint32 slice that uses the same underlying memory
+	return unsafe.Slice((*uint32)(unsafe.Pointer(&bytes[0])), len(bytes)/4)
+}

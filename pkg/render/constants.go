@@ -27,7 +27,7 @@ const (
 // Camera constants
 const (
 	// Movement speeds
-	DefaultMoveSpeed   = 5.0
+	DefaultMoveSpeed   = 10.0
 	DefaultRotateSpeed = 0.1
 
 	// Default orientation

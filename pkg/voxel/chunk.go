@@ -91,9 +91,9 @@ func (c *Chunk) SetBlock(x, y, z int, blockType BlockType) {
 // WorldPosition returns the world position of this chunk (corner)
 func (c *Chunk) WorldPosition() mgl32.Vec3 {
 	return mgl32.Vec3{
-		float32(c.X * int32(c.Size)),
-		float32(c.Y * int32(c.Size)),
-		float32(c.Z * int32(c.Size)),
+		float32(c.X),
+		float32(c.Y),
+		float32(c.Z),
 	}
 }
 

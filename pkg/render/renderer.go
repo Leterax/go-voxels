@@ -2,6 +2,7 @@ package render
 
 import (
 	"fmt"
+	"log"
 	"unsafe"
 
 	"openglhelper"
@@ -27,8 +28,10 @@ type Renderer struct {
 	// Voxel rendering data
 	cubeVAO *openglhelper.VertexArrayObject
 
-	// Triple-buffered persistent memory for chunk data
-	tripleBuffer *openglhelper.TripleBuffer
+	// Single persistent buffer for chunk data with coherent mapping
+	persistentBuffer     *openglhelper.BufferObject
+	persistentBufferSize int
+	mappedUints          []uint32
 
 	// Multi-draw indirect support
 	indirectBuffer       *openglhelper.BufferObject
@@ -41,6 +44,9 @@ type Renderer struct {
 
 	// Rendering modes
 	isWireframeMode bool
+
+	// Optimization flags
+	verticesNeedUpdate bool
 
 	// Cleanup tracking
 	isClosed bool
@@ -95,32 +101,37 @@ func (r *Renderer) initVoxelRenderSystem() error {
 
 	// Calculate the required buffer size for persistent mapping
 	// Each chunk contains packed vertices (uint32) for each quad
-	const maxQuadsPerChunk = 65536 // Maximum number of quads we expect in a chunk
-	const bytesPerVertex = 4       // 4 bytes for each packed uint32 vertex
-	const verticesPerQuad = 4      // Each quad has 4 vertices
-	const numBuffers = 3           // Triple buffering
+	const maxQuadsPerChunk = 4096 // Maximum number of quads we expect in a chunk
+	const bytesPerVertex = 4      // 4 bytes for each packed uint32 vertex
+	const verticesPerQuad = 4     // Each quad has 4 vertices
 
 	// Calculate size requirements
-	vertexBufferSize := maxQuadsPerChunk * verticesPerQuad * bytesPerVertex
+	r.persistentBufferSize = maxQuadsPerChunk * 1024 * verticesPerQuad * bytesPerVertex // Support ~100 chunks
 
-	// Create the triple-buffered persistent vertex buffer
-	tripleBuffer, err := openglhelper.NewTripleBuffer(gl.ARRAY_BUFFER, vertexBufferSize, numBuffers)
+	// Create a single persistent buffer with coherent flag
+	persistentBuffer, mappedData, err := openglhelper.CreatePersistentBuffer(
+		gl.ARRAY_BUFFER,
+		r.persistentBufferSize,
+		gl.MAP_WRITE_BIT|gl.MAP_PERSISTENT_BIT|gl.MAP_COHERENT_BIT)
+
 	if err != nil {
-		return fmt.Errorf("failed to create triple buffer: %w", err)
+		return fmt.Errorf("failed to create persistent buffer: %w", err)
 	}
-	r.tripleBuffer = tripleBuffer
+
+	r.persistentBuffer = persistentBuffer
+	r.mappedUints = openglhelper.BytesToUint32(mappedData)
 
 	// Bind the buffer
-	r.tripleBuffer.Buffer.Bind()
+	r.persistentBuffer.Bind()
 
-	// Set up vertex attribute - we only have one attribute now (the packed uint32)
+	// Set up vertex attribute - we only have one attribute (the packed uint32)
 	gl.VertexAttribIPointer(0, 1, gl.UNSIGNED_INT, 4, gl.PtrOffset(0))
 	gl.EnableVertexAttribArray(0)
 
 	// Setup indices for quads
 	// For each quad, we need 6 indices to form 2 triangles
 	// Create a pattern that's reused for all quads: [0,1,2, 0,2,3, 4,5,6, 4,6,7, ...]
-	const maxQuads = maxQuadsPerChunk * numBuffers // Across all buffers
+	const maxQuads = maxQuadsPerChunk * 100 // Support for ~100 chunks
 	indices := make([]uint32, maxQuads*6)
 
 	for i := uint32(0); i < uint32(maxQuads); i++ {
@@ -171,8 +182,8 @@ func (r *Renderer) SetCameraLookAt(target mgl32.Vec3) {
 	r.camera.LookAt(target)
 }
 
-// Run starts the main rendering loop with the provided chunks
-func (r *Renderer) Run(chunks []*voxel.Chunk) {
+// SetupOpenGL initializes OpenGL state for rendering
+func (r *Renderer) SetupOpenGL() {
 	// Set up initial OpenGL state
 	gl.Enable(gl.DEPTH_TEST)
 	gl.DepthFunc(gl.LESS)
@@ -182,38 +193,52 @@ func (r *Renderer) Run(chunks []*voxel.Chunk) {
 
 	// Set initial shader uniforms
 	r.cubeShader.Use()
+}
+
+// ShouldClose returns whether the window should close
+func (r *Renderer) ShouldClose() bool {
+	return r.window.ShouldClose()
+}
+
+// RenderFrame renders a single frame with the given chunks
+func (r *Renderer) RenderFrame(chunks []*voxel.Chunk) {
+	// Calculate delta time
+	currentTime := glfw.GetTime()
+	r.deltaTime = float32(currentTime - r.lastFrameTime)
+	r.lastFrameTime = currentTime
+	r.totalTime += r.deltaTime
+
+	// Process input
+	r.camera.ProcessKeyboardInput(r.deltaTime, r.window)
+
+	// Clear the screen
+	r.window.Clear()
+
+	// Enable depth testing for proper 3D rendering
+	gl.Enable(gl.DEPTH_TEST)
+
+	// Render chunks if we have any
+	if len(chunks) > 0 {
+		r.RenderChunksIndirect(chunks)
+	}
+
+	// Swap buffers and poll events
+	r.window.SwapBuffers()
+	r.window.PollEvents()
+}
+
+// Run starts the main rendering loop with the provided chunks
+func (r *Renderer) Run(chunks []*voxel.Chunk) {
+	// Set up initial OpenGL state
+	r.SetupOpenGL()
 
 	// Initialize draw commands for all chunks at startup
 	r.UpdateDrawCommands(chunks)
 
 	// Main loop
-	for !r.window.ShouldClose() {
-		// Calculate delta time
-		currentTime := glfw.GetTime()
-		r.deltaTime = float32(currentTime - r.lastFrameTime)
-		r.lastFrameTime = currentTime
-		r.totalTime += r.deltaTime
-
-		// Process input
-		r.camera.ProcessKeyboardInput(r.deltaTime, r.window)
-
-		// Clear the screen
-		r.window.Clear()
-
-		// Enable depth testing for proper 3D rendering
-		gl.Enable(gl.DEPTH_TEST)
-
-		// Render all chunks using multi-draw indirect
-		if len(chunks) > 0 {
-			// Update draw commands every frame in case chunks have changed
-			// This could be optimized to only update when chunks actually change
-			r.UpdateDrawCommands(chunks)
-			r.RenderChunksIndirect(chunks)
-		}
-
-		// Swap buffers and poll events
-		r.window.SwapBuffers()
-		r.window.PollEvents()
+	for !r.ShouldClose() {
+		// Render a frame
+		r.RenderFrame(chunks)
 	}
 
 	// Cleanup resources
@@ -227,8 +252,9 @@ func (r *Renderer) Cleanup() {
 	}
 
 	// Clean up OpenGL resources
-	if r.tripleBuffer != nil {
-		r.tripleBuffer.Cleanup()
+	if r.persistentBuffer != nil {
+		r.persistentBuffer.Unmap()
+		r.persistentBuffer.Delete()
 	}
 
 	if r.indicesBuffer != nil {
@@ -268,7 +294,7 @@ func (r *Renderer) keyCallback(window *glfw.Window, key glfw.Key, scancode int, 
 	}
 
 	// Toggle wireframe mode with X key
-	if key == KeyX && action == glfw.Press {
+	if key == glfw.KeyX && action == glfw.Press {
 		r.ToggleWireframeMode()
 	}
 }
@@ -300,10 +326,7 @@ func (r *Renderer) RenderChunk(chunk *voxel.Chunk) {
 
 	// Ensure we have the persistent buffer set up
 	r.cubeVAO.Bind()
-	r.tripleBuffer.Buffer.Bind()
-
-	// Wait for the current buffer to be ready
-	r.tripleBuffer.WaitForSync()
+	r.persistentBuffer.Bind()
 
 	// Get the number of vertices to render
 	vertexCount := len(chunk.Mesh.PackedVertices)
@@ -311,11 +334,9 @@ func (r *Renderer) RenderChunk(chunk *voxel.Chunk) {
 		return
 	}
 
-	// Get the offset for the current buffer section
-	offset := r.tripleBuffer.CurrentOffsetFloats()
-
-	// Copy the vertices directly to the mapped uint32 slice
-	copy(r.tripleBuffer.MappedUints[offset:offset+vertexCount], chunk.Mesh.PackedVertices)
+	// Copy vertices directly to mapped memory
+	// Since we're rendering a single chunk, we'll use the first part of the buffer
+	copy(r.mappedUints[:vertexCount], chunk.Mesh.PackedVertices)
 
 	// Use the shader
 	r.cubeShader.Use()
@@ -338,20 +359,8 @@ func (r *Renderer) RenderChunk(chunk *voxel.Chunk) {
 	// Set model matrix (identity for now, position is handled through chunkPosition uniform)
 	r.cubeShader.SetMat4("model", mgl32.Ident4())
 
-	// Calculate buffer offset in bytes for the current buffer section
-	bufferOffsetBytes := r.tripleBuffer.CurrentOffsetBytes()
-
-	// Update attribute pointer to point to the current buffer section
-	gl.VertexAttribIPointer(0, 1, gl.UNSIGNED_INT, 4, gl.PtrOffset(bufferOffsetBytes))
-
 	// Draw the quads (each quad has 4 vertices)
 	gl.DrawArrays(gl.QUADS, 0, int32(vertexCount))
-
-	// Create sync object for this buffer
-	r.tripleBuffer.CreateFenceSync()
-
-	// Advance to the next buffer section for the next frame
-	r.tripleBuffer.Advance()
 }
 
 // UpdateDrawCommands updates the indirect drawing commands buffer for all renderable chunks
@@ -361,17 +370,39 @@ func (r *Renderer) UpdateDrawCommands(chunks []*voxel.Chunk) {
 
 	// Early exit if no chunks
 	if len(chunks) == 0 {
+		fmt.Println("UpdateDrawCommands: No chunks to render")
 		return
 	}
+
+	fmt.Printf("UpdateDrawCommands: Processing %d chunks\n", len(chunks))
+
+	// Always update vertices when updating draw commands
+	r.verticesNeedUpdate = true
 
 	// Limit to max commands
 	chunkCount := len(chunks)
 	if chunkCount > r.maxDrawCommands {
 		chunkCount = r.maxDrawCommands
+		fmt.Printf("UpdateDrawCommands: Limited to %d chunks (max commands)\n", r.maxDrawCommands)
 	}
 
-	// Fill commands
+	// Reset total quads for vertex base calculation
 	totalQuads := 0
+
+	// Reset vertex buffer for new data (if needed)
+	vertexOffset := 0
+	maxVertices := r.persistentBufferSize / 4
+	shouldUpdateVertices := r.verticesNeedUpdate
+
+	fmt.Printf("UpdateDrawCommands: shouldUpdateVertices=%v\n", shouldUpdateVertices)
+
+	// If updating vertices, bind the buffer
+	if shouldUpdateVertices {
+		r.persistentBuffer.Bind()
+	}
+
+	// Process each chunk - handle both draw commands and vertex data in the same loop
+	// to ensure perfect alignment between buffers
 	for i := 0; i < chunkCount; i++ {
 		chunk := chunks[i]
 
@@ -381,9 +412,17 @@ func (r *Renderer) UpdateDrawCommands(chunks []*voxel.Chunk) {
 		}
 
 		// Calculate number of quads in this chunk
-		quads := len(chunk.Mesh.PackedVertices) / 4
+		vertexCount := len(chunk.Mesh.PackedVertices)
+		quads := vertexCount / 4
 		if quads == 0 {
 			continue
+		}
+
+		// Skip if would exceed buffer
+		if shouldUpdateVertices && vertexOffset+vertexCount > maxVertices {
+			log.Printf("Warning: Buffer limit reached, some chunks not rendered. Used: %d/%d vertices.",
+				vertexOffset, maxVertices)
+			break
 		}
 
 		// Create command
@@ -400,10 +439,19 @@ func (r *Renderer) UpdateDrawCommands(chunks []*voxel.Chunk) {
 		worldPos := chunk.WorldPosition()
 		r.chunkPositions[r.currentDrawCommands] = mgl32.Vec4{worldPos.X(), worldPos.Y(), worldPos.Z(), 0.0}
 
+		// If we need to update vertices, copy them to the buffer
+		if shouldUpdateVertices {
+			// Copy vertices directly to mapped memory
+			copy(r.mappedUints[vertexOffset:vertexOffset+vertexCount], chunk.Mesh.PackedVertices)
+			vertexOffset += vertexCount
+		}
+
 		// Increment counters
 		totalQuads += quads
 		r.currentDrawCommands++
 	}
+
+	fmt.Printf("UpdateDrawCommands: Prepared %d draw commands with %d total quads\n", r.currentDrawCommands, totalQuads)
 
 	// Update the draw commands buffer if we have commands
 	if r.currentDrawCommands > 0 {
@@ -415,44 +463,25 @@ func (r *Renderer) UpdateDrawCommands(chunks []*voxel.Chunk) {
 		positionsBufferSize := r.currentDrawCommands * int(unsafe.Sizeof(mgl32.Vec4{}))
 		gl.BufferSubData(gl.SHADER_STORAGE_BUFFER, 0, positionsBufferSize, gl.Ptr(r.chunkPositions))
 	}
+
+	// Reset vertex update flag
+	r.verticesNeedUpdate = false
 }
 
 // RenderChunksIndirect renders all chunks using multidrawindirect
 func (r *Renderer) RenderChunksIndirect(chunks []*voxel.Chunk) {
 	// Skip if no commands
 	if r.currentDrawCommands == 0 {
+		fmt.Println("RenderChunksIndirect: No draw commands, skipping render")
 		return
 	}
 
+	fmt.Printf("RenderChunksIndirect: Rendering %d chunks with %d draw commands\n", len(chunks), r.currentDrawCommands)
+
 	// Ensure we have the persistent buffer set up
 	r.cubeVAO.Bind()
-	r.tripleBuffer.Buffer.Bind()
+	r.persistentBuffer.Bind()
 	r.indicesBuffer.Bind()
-
-	// Wait for the current buffer to be ready
-	r.tripleBuffer.WaitForSync()
-
-	// Copy all chunk vertex data to the persistent buffer
-	currentOffset := 0
-
-	// Copy vertices from each chunk
-	for _, chunk := range chunks {
-		if chunk == nil || chunk.Mesh == nil || len(chunk.Mesh.PackedVertices) == 0 {
-			continue
-		}
-
-		vertexCount := len(chunk.Mesh.PackedVertices)
-
-		// Skip if would exceed buffer
-		if currentOffset+vertexCount >= r.tripleBuffer.BufferSize/4 {
-			break
-		}
-
-		// Copy vertices directly to mapped memory
-		copy(r.tripleBuffer.MappedUints[r.tripleBuffer.CurrentOffsetFloats()+currentOffset:], chunk.Mesh.PackedVertices)
-
-		currentOffset += vertexCount
-	}
 
 	// Use the shader
 	r.cubeShader.Use()
@@ -474,11 +503,8 @@ func (r *Renderer) RenderChunksIndirect(chunks []*voxel.Chunk) {
 	// Set a global chunk position (will be overridden by vertex shader)
 	r.cubeShader.SetVec3("chunkPosition", mgl32.Vec3{0, 0, 0})
 
-	// Calculate buffer offset in bytes for the current buffer section
-	bufferOffsetBytes := r.tripleBuffer.CurrentOffsetBytes()
-
-	// Update attribute pointer to point to the current buffer section
-	gl.VertexAttribIPointer(0, 1, gl.UNSIGNED_INT, 4, gl.PtrOffset(bufferOffsetBytes))
+	// Update attribute pointer to point to the start of the buffer
+	gl.VertexAttribIPointer(0, 1, gl.UNSIGNED_INT, 4, gl.PtrOffset(0))
 
 	// Bind the indirect buffer
 	r.indirectBuffer.Bind()
@@ -489,12 +515,6 @@ func (r *Renderer) RenderChunksIndirect(chunks []*voxel.Chunk) {
 		gl.UNSIGNED_INT,
 		r.currentDrawCommands,
 	)
-
-	// Create fence sync for this buffer
-	r.tripleBuffer.CreateFenceSync()
-
-	// Advance to the next buffer section
-	r.tripleBuffer.Advance()
 }
 
 // ToggleWireframeMode switches between solid and wireframe rendering
