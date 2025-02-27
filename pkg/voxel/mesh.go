@@ -481,34 +481,13 @@ func GreedyMeshChunk(voxels [][][]BlockType, chunkPos mgl32.Vec3) *Mesh {
 	return mesh
 }
 
-// ConvertTo3DArray converts a flat 1D array of BlockTypes to a 3D array
-// Assumes the flat array is arranged in X -> Y -> Z order
-func ConvertTo3DArray(flatBlocks []BlockType, sizeX, sizeY, sizeZ int) [][][]BlockType {
-	blocks := make([][][]BlockType, sizeX)
-	for x := 0; x < sizeX; x++ {
-		blocks[x] = make([][]BlockType, sizeY)
-		for y := 0; y < sizeY; y++ {
-			blocks[x][y] = make([]BlockType, sizeZ)
-			for z := 0; z < sizeZ; z++ {
-				index := x*sizeY*sizeZ + y*sizeZ + z
-				if index < len(flatBlocks) {
-					blocks[x][y][z] = flatBlocks[index]
-				} else {
-					blocks[x][y][z] = Air
-				}
-			}
-		}
-	}
-	return blocks
-}
-
 // GreedyMesh processes a flat array of block types and returns a mesh
 func GreedyMesh(flatBlocks []BlockType, chunkX, chunkY, chunkZ int32, chunkSize int) *Mesh {
 	// Convert chunk position to world coordinates
 	chunkPos := mgl32.Vec3{float32(chunkX), float32(chunkY), float32(chunkZ)}
 
-	// Convert flat array to 3D array
-	blocks := ConvertTo3DArray(flatBlocks, chunkSize, chunkSize, chunkSize)
+	// Convert flat array to 3D array (no coordinate swapping needed here)
+	blocks := ConvertTo3DArray(flatBlocks, chunkSize, chunkSize, chunkSize, false)
 
 	// Generate mesh using greedy meshing
 	return GreedyMeshChunk(blocks, chunkPos)

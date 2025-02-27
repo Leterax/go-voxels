@@ -10,7 +10,7 @@ import (
 // ChunkManager handles the management of chunks received from the network
 // It ensures thread-safe access and processing of chunks
 type ChunkManager struct {
-	chunks         map[ChunkCoord]*voxel.Chunk
+	chunks         map[voxel.ChunkCoord]*voxel.Chunk
 	chunksMutex    sync.RWMutex
 	chunkQueue     chan chunkJob
 	client         *network.Client
@@ -23,14 +23,9 @@ type ChunkManager struct {
 	chunksChangedMutex sync.RWMutex
 }
 
-// ChunkCoord represents the x,y,z coordinates of a chunk
-type ChunkCoord struct {
-	X, Y, Z int32
-}
-
 // chunkJob represents a job to process a chunk
 type chunkJob struct {
-	coord     ChunkCoord
+	coord     voxel.ChunkCoord
 	blocks    []voxel.BlockType
 	monoType  bool
 	blockType voxel.BlockType
@@ -39,7 +34,7 @@ type chunkJob struct {
 // NewChunkManager creates a new chunk manager
 func NewChunkManager(client *network.Client, renderDistance uint8) *ChunkManager {
 	cm := &ChunkManager{
-		chunks:         make(map[ChunkCoord]*voxel.Chunk),
+		chunks:         make(map[voxel.ChunkCoord]*voxel.Chunk),
 		chunkQueue:     make(chan chunkJob, 100), // Buffer for 100 chunk jobs
 		client:         client,
 		stopWorker:     make(chan struct{}),
@@ -60,16 +55,20 @@ func NewChunkManager(client *network.Client, renderDistance uint8) *ChunkManager
 
 // handleChunkReceive is called when a full chunk is received from the network
 func (cm *ChunkManager) handleChunkReceive(x, y, z int32, blocks []voxel.BlockType) {
-	cm.queueChunkJob(ChunkCoord{X: x, Y: y, Z: z}, blocks, false, voxel.Air)
+	// x,y,z are in world coordinates, so we need to convert them to chunk coordinates
+	positionInChunkCoords := voxel.WorldToChunkCoord(x, y, z, network.ChunkSize)
+	cm.queueChunkJob(voxel.ChunkCoord{X: positionInChunkCoords.X, Y: positionInChunkCoords.Y, Z: positionInChunkCoords.Z}, blocks, false, voxel.Air)
 }
 
 // handleMonoChunk is called when a mono-type chunk is received from the network
 func (cm *ChunkManager) handleMonoChunk(x, y, z int32, blockType voxel.BlockType) {
-	cm.queueChunkJob(ChunkCoord{X: x, Y: y, Z: z}, nil, true, blockType)
+	// x,y,z are in world coordinates, so we need to convert them to chunk coordinates
+	positionInChunkCoords := voxel.WorldToChunkCoord(x, y, z, network.ChunkSize)
+	cm.queueChunkJob(voxel.ChunkCoord{X: positionInChunkCoords.X, Y: positionInChunkCoords.Y, Z: positionInChunkCoords.Z}, nil, true, blockType)
 }
 
 // queueChunkJob adds a chunk processing job to the queue
-func (cm *ChunkManager) queueChunkJob(coord ChunkCoord, blocks []voxel.BlockType, monoType bool, blockType voxel.BlockType) {
+func (cm *ChunkManager) queueChunkJob(coord voxel.ChunkCoord, blocks []voxel.BlockType, monoType bool, blockType voxel.BlockType) {
 	cm.chunkQueue <- chunkJob{
 		coord:     coord,
 		blocks:    blocks,
@@ -118,7 +117,7 @@ func (cm *ChunkManager) chunkWorker() {
 }
 
 // processMonoChunk generates a chunk with a single block type
-func (cm *ChunkManager) processMonoChunk(coord ChunkCoord, blockType voxel.BlockType) {
+func (cm *ChunkManager) processMonoChunk(coord voxel.ChunkCoord, blockType voxel.BlockType) {
 	// Create a new chunk using the world coordinates directly
 	chunk := voxel.NewChunk(coord.X, coord.Y, coord.Z, network.ChunkSize)
 
@@ -133,7 +132,7 @@ func (cm *ChunkManager) processMonoChunk(coord ChunkCoord, blockType voxel.Block
 }
 
 // processFullChunk processes a full chunk with mixed block types
-func (cm *ChunkManager) processFullChunk(coord ChunkCoord, blocks []voxel.BlockType) {
+func (cm *ChunkManager) processFullChunk(coord voxel.ChunkCoord, blocks []voxel.BlockType) {
 	// Create a new chunk from the received blocks using the world coordinates directly
 	chunk := voxel.NewChunkFromBlocks(coord.X, coord.Y, coord.Z, network.ChunkSize, blocks)
 
@@ -145,7 +144,7 @@ func (cm *ChunkManager) processFullChunk(coord ChunkCoord, blocks []voxel.BlockT
 }
 
 // storeChunk stores a chunk in the chunks map with proper locking
-func (cm *ChunkManager) storeChunk(coord ChunkCoord, chunk *voxel.Chunk) {
+func (cm *ChunkManager) storeChunk(coord voxel.ChunkCoord, chunk *voxel.Chunk) {
 	cm.chunksMutex.Lock()
 	cm.chunks[coord] = chunk
 	cm.chunksMutex.Unlock()

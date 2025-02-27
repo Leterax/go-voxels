@@ -4,30 +4,6 @@ import (
 	"github.com/go-gl/mathgl/mgl32"
 )
 
-// BlockType represents the different types of blocks in the game
-type BlockType uint8
-
-const (
-	Air BlockType = iota
-	Grass
-	Dirt
-	Stone
-	OakLog
-	OakLeaves
-	Glass
-	Water
-	Sand
-	Snow
-	OakPlanks
-	StoneBricks
-	Netherrack
-	GoldBlock
-	PackedIce
-	Lava
-	Barrel
-	Bookshelf
-)
-
 // Chunk represents a 3D cube of voxels
 type Chunk struct {
 	// Position in chunk coordinates (not world coordinates)
@@ -77,7 +53,7 @@ func (c *Chunk) isValidCoordinate(x, y, z int) bool {
 
 // getBlockIndex converts 3D coordinates to a 1D array index
 func (c *Chunk) getBlockIndex(x, y, z int) int {
-	return x*c.Size*c.Size + y*c.Size + z
+	return LocalToIndex(x, y, z, c.Size)
 }
 
 // GetBlock returns the block type at the specified local coordinates
@@ -98,17 +74,13 @@ func (c *Chunk) SetBlock(x, y, z int, blockType BlockType) {
 
 // WorldPosition returns the world position of this chunk (corner)
 func (c *Chunk) WorldPosition() mgl32.Vec3 {
-	return mgl32.Vec3{
-		float32(c.X),
-		float32(c.Y),
-		float32(c.Z),
-	}
+	return ChunkToWorldPos(c.X, c.Y, c.Z, c.Size)
 }
 
 // GenerateMesh creates a mesh for this chunk using greedy meshing
 func (c *Chunk) GenerateMesh() *Mesh {
-	// Convert to our expected 3D format
-	blocks3D := convertTo3DArray(c.Blocks, c.Size)
+	// Convert to our expected 3D format, with coordinate swap
+	blocks3D := ConvertTo3DArray(c.Blocks, c.Size, c.Size, c.Size, true)
 
 	// Create a mesh using greedy meshing
 	c.Mesh = GreedyMeshChunk(blocks3D, c.WorldPosition())
@@ -147,36 +119,31 @@ func (c *Chunk) ForEachNeighbor(fn func(x, y, z int32)) {
 	}
 }
 
-// convertTo3DArray converts a flat 1D array of BlockType to a 3D array
-// This function swaps X and Z coordinates to fix the coordinate system mismatch with the server
-func convertTo3DArray(flatBlocks []BlockType, size int) [][][]BlockType {
-	// We need to initialize the array with dimensions that match how we'll access it
-	// Since we're swapping X and Z, we need to initialize as [size][size][size]
-	blocks := make([][][]BlockType, size)
-	for i := 0; i < size; i++ {
-		blocks[i] = make([][]BlockType, size)
-		for j := 0; j < size; j++ {
-			blocks[i][j] = make([]BlockType, size)
-		}
+// IsMono checks if the chunk contains only a single block type
+// Returns true and the block type if mono, false and Air otherwise
+func (c *Chunk) IsMono() (bool, BlockType) {
+	if len(c.Blocks) == 0 {
+		return true, Air
 	}
 
-	// Now we fill the array with swapped coordinates
-	for x := 0; x < size; x++ {
-		for y := 0; y < size; y++ {
-			for z := 0; z < size; z++ {
-				// Use the original index calculation to access the flat array
-				index := x*size*size + y*size + z
+	firstBlock := c.Blocks[0]
 
-				// Here we swap X and Z when storing in the 3D array
-				// Original coordinates (x,y,z) become (z,y,x) in the 3D array
-				if index < len(flatBlocks) {
-					// Put the voxel at the swapped coordinates
-					blocks[z][y][x] = flatBlocks[index]
-				} else {
-					blocks[z][y][x] = Air
-				}
+	// If first block is Air, quickly check if any block is not Air
+	if firstBlock == Air {
+		for _, block := range c.Blocks {
+			if block != Air {
+				return false, Air
 			}
 		}
+		return true, Air
 	}
-	return blocks
+
+	// Otherwise check if all blocks match the first one
+	for _, block := range c.Blocks {
+		if block != firstBlock {
+			return false, Air
+		}
+	}
+
+	return true, firstBlock
 }

@@ -1,32 +1,40 @@
 # Go-Voxels
 
-A high-performance OpenGL 4.6 renderer demo showcasing thousands of animated 3D cubes using persistent buffer mapping in Go.
+A voxel-based game engine with efficient OpenGL rendering, multiplayer networking, and optimized chunk management written in Go.
 
 ![Go-Voxels Demo](assets/images/demo.png)
 
 ## Features
 
-- Render 50,000+ 3D cubes with real-time animation
-- Advanced OpenGL techniques with persistent buffer mapping for optimal performance
-- Physics-based animation with bouncing behavior
-- Phong lighting model with ambient, diffuse, and specular components
-- Dynamic updates with partial buffer processing to maintain smooth framerates
+- **Optimized Voxel Rendering**
+  - Greedy meshing algorithm for efficient triangle reduction
+  - Persistent buffer mapping for optimal GPU performance
+  - Multi-draw indirect rendering of thousands of chunks
+  - Coordinate system utilities for seamless world management
+
+- **Block System**
+  - Support for various block types with different properties
+  - Specialized rendering for mono-type chunks
+  - Block property system (solidity, transparency)
+
+- **Chunked World**
+  - Dynamic chunk loading and unloading
+  - Efficient storage of chunk data
+  - Thread-safe chunk management
+
+- **Multiplayer Support**
+  - Client/server architecture
+  - Network synchronization of chunks and entities
+  - Efficient mono-chunk transmission
 
 ## Project Structure
 
 - `cmd/voxels`: Main application entry point
-- `pkg/render`: Rendering engine and camera system
-- `internal/openglhelper`: OpenGL abstractions for buffers, shaders, and window management
-
-## Performance
-
-This demo showcases high-performance rendering techniques:
-
-- Persistent buffer mapping for direct GPU memory access
-- Partial buffer updates (only updating a subset of cubes each frame)
-- Single draw call for all cubes with indexed rendering
-- Backface culling optimization
-- Efficient memory management with unsafe pointer manipulation
+- `pkg/game`: Game logic and chunk management
+- `pkg/voxel`: Core voxel engine (blocks, chunks, mesh generation)
+- `pkg/render`: OpenGL rendering system
+- `pkg/network`: Multiplayer networking
+- `internal/openglhelper`: OpenGL abstractions
 
 ## Getting Started
 
@@ -44,54 +52,54 @@ go build -o voxels ./cmd/voxels
 
 ### Running
 
+#### Singleplayer Mode
 ```bash
 ./voxels
+```
+
+#### Multiplayer Mode
+```bash
+./voxels -server <server-address> -name <player-name> -renderdist <chunk-render-distance>
 ```
 
 ## Controls
 
 - **W/A/S/D**: Move camera in the horizontal plane
 - **Space/Shift**: Move camera up/down
-- **Mouse**: Look around (when mouse is captured)
-- **C**: Toggle mouse capture mode
-- **Escape**: Exit the application
+- **Mouse**: Look around
+- **ESC**: Exit the application
 
 ## Configuration
 
-You can modify the rendering parameters in `pkg/render/renderer.go`:
+Command-line options:
+- `-server`: Server address (empty for singleplayer)
+- `-name`: Player name for multiplayer
+- `-renderdist`: Render distance in chunks (default: 8)
 
-```go
-renderer := &Renderer{
-    window:             window,
-    camera:             camera,
-    numCubes:           50000, // Total number of cubes to render
-    cubesPerUpdate:     5000,  // Number of cubes to update each frame
-    currentUpdateIndex: 0,
-}
-```
+## Technical Details
 
-Adjust these values based on your hardware capabilities:
-- For higher-end systems, increase `numCubes` for more visual density
-- For lower-end systems, decrease `numCubes` and/or `cubesPerUpdate` for better performance
+### Voxel Rendering
+
+The engine uses several optimizations for efficient voxel rendering:
+
+1. **Greedy Meshing**: Combines adjacent faces of the same block type to reduce triangle count
+2. **Packed Vertices**: Compresses vertex data into a single 32-bit integer to reduce memory usage
+3. **Mono-Chunk Optimization**: Special fast-path for chunks containing only one block type
+4. **Coordinate System Utilities**: Consistent handling of chunk, world, and local coordinates
+
+### Chunk Management
+
+Chunks are managed efficiently with:
+
+1. **Thread-safe Access**: Mutex-protected operations for concurrent chunk processing
+2. **Background Processing**: Separate worker goroutine for mesh generation
+3. **Change Detection**: Smart tracking of chunk changes to minimize GPU updates
 
 ## Dependencies
 
-This project uses the following external libraries:
-
-- [go-gl/gl](https://github.com/go-gl/gl): Go bindings for OpenGL 4.6
-- [go-gl/glfw](https://github.com/go-gl/glfw): Go bindings for GLFW (window management)
-- [go-gl/mathgl](https://github.com/go-gl/mathgl): Go math library for OpenGL
-
-## How It Works
-
-The demo uses a persistently mapped OpenGL buffer to directly write vertex data to GPU memory, avoiding the overhead of traditional buffer updates. Each frame:
-
-1. A subset of cubes are updated (positions, velocities)
-2. The updated data is written directly to the mapped GPU memory
-3. All cubes are rendered in a single draw call using indexed rendering
-4. FPS and performance statistics are displayed
-
-This approach provides much higher performance than traditional buffer update methods, especially when rendering many thousands of moving objects.
+- [go-gl/gl](https://github.com/go-gl/gl): Go bindings for OpenGL
+- [go-gl/glfw](https://github.com/go-gl/glfw): Window management
+- [go-gl/mathgl](https://github.com/go-gl/mathgl): OpenGL math library
 
 ## License
 
