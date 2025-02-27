@@ -111,12 +111,22 @@ func (c *Camera) SetPosition(pos mgl32.Vec3) {
 	c.position = pos
 }
 
-// Orientation returns the current camera orientation (yaw, pitch)
+// Orientation returns the yaw and pitch of the camera
 func (c *Camera) Orientation() (yaw, pitch float32) {
 	return c.yaw, c.pitch
 }
 
-// SetRotation sets the camera rotation angles
+// GetYaw returns the camera's yaw (horizontal rotation)
+func (c *Camera) GetYaw() float32 {
+	return c.yaw
+}
+
+// GetPitch returns the camera's pitch (vertical rotation)
+func (c *Camera) GetPitch() float32 {
+	return c.pitch
+}
+
+// SetRotation sets the rotation of the camera
 func (c *Camera) SetRotation(yaw, pitch float32) {
 	c.yaw = yaw
 

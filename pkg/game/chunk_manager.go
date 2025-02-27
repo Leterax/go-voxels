@@ -1,6 +1,7 @@
 package game
 
 import (
+	"log"
 	"sync"
 
 	"github.com/leterax/go-voxels/pkg/network"
@@ -82,6 +83,18 @@ func (cm *ChunkManager) markChunksChanged() {
 	cm.chunksChangedMutex.Lock()
 	cm.chunksChanged = true
 	cm.chunksChangedMutex.Unlock()
+}
+
+// UpdatePlayerPosition sends player position updates to the server
+func (cm *ChunkManager) UpdatePlayerPosition(x, y, z, yaw, pitch float32) error {
+	if cm.client != nil {
+		// Log the position update
+		// log.Printf("ChunkManager: Sending position update to server: (%v, %v, %v), yaw=%v, pitch=%v",
+		// 	x, y, z, yaw, pitch)
+		return cm.client.SendUpdateEntity(x, y, z, yaw, pitch)
+	}
+	log.Printf("ChunkManager: Client not initialized, cannot send position update")
+	return nil
 }
 
 // resetChunksChanged resets the changed flag and returns previous state
@@ -173,4 +186,62 @@ func (cm *ChunkManager) HaveChunksChanged() bool {
 func (cm *ChunkManager) Cleanup() {
 	close(cm.stopWorker)
 	<-cm.workerStopped
+}
+
+// GetNewChunks returns chunks that have been added since the last call
+// and clears the new chunks list
+func (cm *ChunkManager) GetNewChunks() []*voxel.Chunk {
+	cm.chunksMutex.RLock()
+	defer cm.chunksMutex.RUnlock()
+
+	// Get chunks that have been marked as changed
+	if !cm.resetChunksChanged() {
+		return nil
+	}
+
+	// Return all available chunks - the renderer will filter as needed
+	chunks := make([]*voxel.Chunk, 0, len(cm.chunks))
+	for _, chunk := range cm.chunks {
+		chunks = append(chunks, chunk)
+	}
+
+	return chunks
+}
+
+// RemoveDistantChunks removes chunks that are too far from the given position
+func (cm *ChunkManager) RemoveDistantChunks(playerX, playerY, playerZ int32) {
+	// Convert player position to chunk coordinates
+	playerChunkPos := voxel.WorldToChunkCoord(playerX, playerY, playerZ, network.ChunkSize)
+
+	// Maximum distance squared (render distance in chunks)
+	maxDistSquared := int32(cm.renderDistance * cm.renderDistance)
+
+	chunksToRemove := []voxel.ChunkCoord{}
+
+	// Find chunks that are too far away
+	cm.chunksMutex.RLock()
+	for coord, _ := range cm.chunks {
+		// Calculate distance squared between chunk and player
+		dx := coord.X - playerChunkPos.X
+		dy := coord.Y - playerChunkPos.Y
+		dz := coord.Z - playerChunkPos.Z
+		distSquared := dx*dx + dy*dy + dz*dz
+
+		if distSquared > maxDistSquared {
+			chunksToRemove = append(chunksToRemove, coord)
+		}
+	}
+	cm.chunksMutex.RUnlock()
+
+	// Remove the distant chunks
+	if len(chunksToRemove) > 0 {
+		cm.chunksMutex.Lock()
+		for _, coord := range chunksToRemove {
+			delete(cm.chunks, coord)
+		}
+		cm.chunksMutex.Unlock()
+
+		// Mark that chunks have changed
+		cm.markChunksChanged()
+	}
 }

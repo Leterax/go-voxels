@@ -71,6 +71,7 @@ func setupMultiplayerMode(renderer *render.Renderer, serverAddr, playerName stri
 		log.Fatalf("Failed to connect to server: %v", err)
 	}
 	fmt.Println("Connected to server")
+
 	// Set player name and render distance
 	client.SetEntityName(playerName)
 	client.SetRenderDistance(renderDist)
@@ -82,6 +83,9 @@ func setupMultiplayerMode(renderer *render.Renderer, serverAddr, playerName stri
 
 	// Create chunk manager to handle received chunks
 	chunkManager := game.NewChunkManager(client, renderDist)
+
+	// Set the chunk manager in the renderer (CRITICAL: enables position updates to server)
+	renderer.SetChunkManager(chunkManager)
 
 	// Start a goroutine to process network packets
 	go func() {
@@ -101,6 +105,9 @@ func runNetworkMode(renderer *render.Renderer, chunkManager *game.ChunkManager) 
 	// Debug stats
 	var frameCount int
 	lastStatsTime := time.Now()
+	/* Temporarily disabled for chunk removal testing
+	lastChunkCleanupTime := time.Now() // Track when we last cleaned up chunks
+	*/
 
 	// Track if we need to update draw commands
 	haveChunksChanged := true
@@ -114,10 +121,30 @@ func runNetworkMode(renderer *render.Renderer, chunkManager *game.ChunkManager) 
 		newChunksAvailable := chunkManager.HaveChunksChanged()
 
 		if newChunksAvailable {
+			// Important: Update our local copy of chunks
 			chunks = chunkManager.GetChunks()
 			haveChunksChanged = true
 			fmt.Println("Chunks have changed, updating renderer...")
 		}
+
+		/* Temporarily disabled chunk removal for testing
+		// Periodically clean up distant chunks (once every 2 seconds)
+		if time.Since(lastChunkCleanupTime) >= 2*time.Second {
+			camera := renderer.GetCamera()
+			if camera != nil {
+				pos := camera.Position()
+				chunkManager.RemoveDistantChunks(int32(pos.X()), int32(pos.Y()), int32(pos.Z()))
+				lastChunkCleanupTime = time.Now()
+
+				// If chunks were removed, make sure we update our local copy
+				if chunkManager.HaveChunksChanged() {
+					chunks = chunkManager.GetChunks()
+					haveChunksChanged = true
+					fmt.Println("Removed distant chunks, updating renderer...")
+				}
+			}
+		}
+		*/
 
 		// Update debug stats once per second
 		frameCount++
@@ -133,11 +160,14 @@ func runNetworkMode(renderer *render.Renderer, chunkManager *game.ChunkManager) 
 
 		// Only update draw commands when chunks have changed
 		if haveChunksChanged && len(chunks) > 0 {
+			// Update rendering for all current chunks
 			renderer.UpdateDrawCommands(chunks)
 			haveChunksChanged = false
 		}
 
 		// Process one frame with the current chunks
+		// Note: RenderFrame may also update chunks internally through chunkManager
+		// but we'll catch those changes on the next frame via HaveChunksChanged()
 		renderer.RenderFrame(chunks)
 	}
 

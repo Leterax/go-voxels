@@ -10,6 +10,7 @@ import (
 	"github.com/go-gl/gl/v4.6-core/gl"
 	"github.com/go-gl/glfw/v3.3/glfw"
 	"github.com/go-gl/mathgl/mgl32"
+	"github.com/leterax/go-voxels/pkg/game"
 	"github.com/leterax/go-voxels/pkg/voxel"
 )
 
@@ -57,6 +58,9 @@ type Renderer struct {
 
 	// Debug settings
 	debugEnabled bool
+
+	// Chunk management
+	chunkManager *game.ChunkManager
 }
 
 // NewRenderer creates a new renderer with the specified dimensions and title
@@ -121,10 +125,11 @@ func (r *Renderer) initVoxelRenderSystem() error {
 	const verticesPerQuad = 4     // Each quad has 4 vertices
 	const indicesPerQuad = 6      // Each quad needs 6 indices (2 triangles)
 	const bytesPerIndex = 4       // 4 bytes for each uint32 index
+	const maxChunks = 16384
 
 	// Calculate size requirements
-	r.persistentBufferSize = maxQuadsPerChunk * 1024 * verticesPerQuad * bytesPerVertex    // Support ~100 chunks
-	r.persistentIndexBufferSize = maxQuadsPerChunk * 1024 * indicesPerQuad * bytesPerIndex // Support ~100 chunks
+	r.persistentBufferSize = maxQuadsPerChunk * maxChunks * verticesPerQuad * bytesPerVertex    // Support ~100 chunks
+	r.persistentIndexBufferSize = maxQuadsPerChunk * maxChunks * indicesPerQuad * bytesPerIndex // Support ~100 chunks
 
 	// Create a single persistent buffer with coherent flag for vertices
 	persistentBuffer, mappedData, err := openglhelper.CreatePersistentBuffer(
@@ -163,7 +168,7 @@ func (r *Renderer) initVoxelRenderSystem() error {
 	r.createIndexBuffer(maxQuadsPerChunk * 100)
 
 	// Setup multi-draw infrastructure
-	r.setupMultiDraw(1024) // Support up to 1024 chunks
+	r.setupMultiDraw(maxChunks) // Support up to 1024 chunks
 
 	return nil
 }
@@ -262,14 +267,48 @@ func (r *Renderer) RenderFrame(chunks []*voxel.Chunk) {
 	// Process input
 	r.camera.ProcessKeyboardInput(r.deltaTime, r.window)
 
+	// Update camera position on server if we have a chunk manager
+	if r.chunkManager != nil {
+		// Only send position updates at a reasonable rate (every 5 frames)
+		if int(r.totalTime*60)%5 == 0 {
+			cameraPos := r.camera.Position()
+			yaw := r.camera.GetYaw()
+			pitch := r.camera.GetPitch()
+
+			// Send position to server through ChunkManager
+			r.chunkManager.UpdatePlayerPosition(
+				cameraPos.X(), cameraPos.Y(), cameraPos.Z(),
+				yaw, pitch,
+			)
+
+			// r.Debug("Sent position update to server: pos=(%v, %v, %v), yaw=%v, pitch=%v, error=%v",
+			// 	cameraPos.X(), cameraPos.Y(), cameraPos.Z(), yaw, pitch, err)
+		}
+	} else {
+		r.Debug("No chunk manager set, cannot send position updates to server")
+	}
+
+	// Check for new chunks if we have a chunk manager
+	if r.chunkManager != nil {
+		// Check if any chunks have changed
+		newChunks := r.chunkManager.GetNewChunks()
+		if newChunks != nil && len(newChunks) > 0 {
+			r.Debug("RenderFrame: Received %d new/updated chunks", len(newChunks))
+
+			// Just update the renderer with new chunks, but don't remove distant chunks here
+			// Let the main loop handle chunk removal to avoid flickering
+			r.UpdateChunks(newChunks)
+		}
+	}
+
 	// Clear the screen
 	r.window.Clear()
 
 	// Enable depth testing for proper 3D rendering
 	gl.Enable(gl.DEPTH_TEST)
 
-	// We know we have draw commands already set up, so just render
-	if r.currentDrawCommands > 0 {
+	// Render chunks using multi-draw indirect
+	if len(chunks) > 0 && r.currentDrawCommands > 0 {
 		r.RenderChunksIndirect(chunks)
 	}
 
@@ -283,14 +322,20 @@ func (r *Renderer) Run(chunks []*voxel.Chunk) {
 	// Set up initial OpenGL state
 	r.SetupOpenGL()
 
-	// Initialize draw commands for all chunks at startup (one-time operation)
-	r.Debug("Initializing draw commands for static chunks (one-time operation)")
+	// Initialize draw commands for initial chunks
+	r.Debug("Initializing draw commands for initial chunks")
 	r.UpdateDrawCommands(chunks)
 
 	// Main loop
 	for !r.ShouldClose() {
-		// Render a frame
-		r.RenderFrame(chunks)
+		// If we have a chunk manager, we'll use dynamic updates
+		if r.chunkManager != nil {
+			// Render a frame with dynamic chunk updates
+			r.RenderFrame(nil) // No need to pass chunks, the renderer now handles this internally
+		} else {
+			// Legacy mode - render with static chunks
+			r.RenderFrame(chunks)
+		}
 	}
 
 	// Cleanup resources
@@ -644,4 +689,165 @@ func (r *Renderer) ToggleWireframeMode() {
 		// Set GL back to fill mode
 		gl.PolygonMode(gl.FRONT_AND_BACK, gl.FILL)
 	}
+}
+
+// UpdateChunks processes new chunks and updates the buffers accordingly
+// This should be called when new chunks are received from the server
+func (r *Renderer) UpdateChunks(chunks []*voxel.Chunk) {
+	if len(chunks) == 0 {
+		return
+	}
+
+	r.Debug("UpdateChunks: Processing %d received chunks", len(chunks))
+
+	// Mark that we need to update the vertices
+	r.verticesNeedUpdate = true
+
+	// Process the chunks and update the buffers
+	r.processNewChunksForDrawing(chunks)
+
+	r.Debug("Dynamic buffer update complete with %d total draw commands", r.currentDrawCommands)
+}
+
+// processNewChunksForDrawing processes new chunks and adds them to the rendering system
+func (r *Renderer) processNewChunksForDrawing(chunks []*voxel.Chunk) {
+	// Early exit if no chunks
+	if len(chunks) == 0 {
+		return
+	}
+
+	// Calculate current vertex and index offsets
+	vertexOffset := 0
+	maxVertices := r.persistentBufferSize / 4
+
+	// Find current end position in buffer - to append new chunks
+	for i := 0; i < r.currentDrawCommands; i++ {
+		cmd := &r.drawCommands[i]
+		// Each quad uses 6 indices and 4 vertices
+		quadCount := int(cmd.Count) / 6
+		// Accumulate vertex count
+		vertexOffset += quadCount * 4
+	}
+
+	r.Debug("processNewChunksForDrawing: Current vertex offset: %d", vertexOffset)
+
+	// Bind buffers before adding new data
+	r.persistentBuffer.Bind()
+	r.persistentIndexBuffer.Bind()
+
+	// Keep track of how many new commands we're adding
+	newCommandCount := 0
+
+	// Process each new chunk
+	for _, chunk := range chunks {
+		// Skip invalid chunks or already processed chunks
+		if chunk == nil || chunk.Mesh == nil || len(chunk.Mesh.PackedVertices) == 0 {
+			continue
+		}
+
+		// Check if this chunk is already in the draw commands
+		chunkExists := false
+		chunkPos := chunk.WorldPosition()
+
+		for i := 0; i < r.currentDrawCommands; i++ {
+			existingPos := r.chunkPositions[i]
+			if existingPos.X() == chunkPos.X() &&
+				existingPos.Y() == chunkPos.Y() &&
+				existingPos.Z() == chunkPos.Z() {
+				chunkExists = true
+				break
+			}
+		}
+
+		if chunkExists {
+			continue
+		}
+
+		// Calculate number of quads in this chunk
+		vertexCount := len(chunk.Mesh.PackedVertices)
+		quads := vertexCount / 4
+
+		if quads == 0 {
+			continue
+		}
+
+		// Skip if would exceed buffer
+		if vertexOffset+vertexCount > maxVertices {
+			r.Debug("Warning: Buffer limit reached, some chunks not rendered. Used: %d/%d vertices.",
+				vertexOffset, maxVertices)
+			break
+		}
+
+		// First copy vertex data to the mapped buffer at the current offset
+		copy(r.mappedUints[vertexOffset:vertexOffset+vertexCount], chunk.Mesh.PackedVertices)
+
+		// Then add draw command
+		r.addDrawCommand(chunk, vertexOffset/4*6, quads)
+		newCommandCount++
+
+		// Update offset for next chunk
+		vertexOffset += vertexCount
+	}
+
+	r.Debug("processNewChunksForDrawing: Added %d new draw commands", newCommandCount)
+
+	// Update buffer data if we have commands
+	if newCommandCount > 0 {
+		r.updateCommandBuffers()
+	}
+}
+
+// RemoveChunks removes chunks that are no longer needed
+func (r *Renderer) RemoveChunks(coordsToRemove []mgl32.Vec3) {
+	if len(coordsToRemove) == 0 {
+		return
+	}
+
+	r.Debug("RemoveChunks: Removing %d chunks", len(coordsToRemove))
+
+	// Create a map for quick lookup of coordinates to remove
+	removeMap := make(map[mgl32.Vec3]bool)
+	for _, coord := range coordsToRemove {
+		removeMap[coord] = true
+	}
+
+	// Find indices to remove
+	indicesToRemove := []int{}
+	for i := 0; i < r.currentDrawCommands; i++ {
+		chunkPos := mgl32.Vec3{r.chunkPositions[i].X(), r.chunkPositions[i].Y(), r.chunkPositions[i].Z()}
+		if removeMap[chunkPos] {
+			indicesToRemove = append(indicesToRemove, i)
+		}
+	}
+
+	if len(indicesToRemove) == 0 {
+		return
+	}
+
+	// Remove the chunks from the draw commands by shifting remaining commands
+	for _, index := range indicesToRemove {
+		// Shift everything after this index down
+		for i := index; i < r.currentDrawCommands-1; i++ {
+			r.drawCommands[i] = r.drawCommands[i+1]
+			r.chunkPositions[i] = r.chunkPositions[i+1]
+		}
+		r.currentDrawCommands--
+	}
+
+	// Update the buffers
+	if r.currentDrawCommands > 0 {
+		r.updateCommandBuffers()
+	}
+
+	r.Debug("RemoveChunks: Removed %d chunks, %d remaining", len(indicesToRemove), r.currentDrawCommands)
+}
+
+// SetChunkManager sets the chunk manager for dynamic chunk updates
+func (r *Renderer) SetChunkManager(cm *game.ChunkManager) {
+	r.chunkManager = cm
+}
+
+// GetCamera returns the camera instance
+func (r *Renderer) GetCamera() *Camera {
+	return r.camera
 }
