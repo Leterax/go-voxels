@@ -70,22 +70,30 @@ func (c *Chunk) FillWithBlockType(blockType BlockType) {
 	}
 }
 
+// isValidCoordinate checks if the given coordinates are within the chunk boundaries
+func (c *Chunk) isValidCoordinate(x, y, z int) bool {
+	return x >= 0 && y >= 0 && z >= 0 && x < c.Size && y < c.Size && z < c.Size
+}
+
+// getBlockIndex converts 3D coordinates to a 1D array index
+func (c *Chunk) getBlockIndex(x, y, z int) int {
+	return x*c.Size*c.Size + y*c.Size + z
+}
+
 // GetBlock returns the block type at the specified local coordinates
 func (c *Chunk) GetBlock(x, y, z int) BlockType {
-	if x < 0 || y < 0 || z < 0 || x >= c.Size || y >= c.Size || z >= c.Size {
+	if !c.isValidCoordinate(x, y, z) {
 		return Air // Return air for out-of-bounds coordinates
 	}
-	index := x*c.Size*c.Size + y*c.Size + z
-	return c.Blocks[index]
+	return c.Blocks[c.getBlockIndex(x, y, z)]
 }
 
 // SetBlock sets the block type at the specified local coordinates
 func (c *Chunk) SetBlock(x, y, z int, blockType BlockType) {
-	if x < 0 || y < 0 || z < 0 || x >= c.Size || y >= c.Size || z >= c.Size {
+	if !c.isValidCoordinate(x, y, z) {
 		return // Ignore out-of-bounds coordinates
 	}
-	index := x*c.Size*c.Size + y*c.Size + z
-	c.Blocks[index] = blockType
+	c.Blocks[c.getBlockIndex(x, y, z)] = blockType
 }
 
 // WorldPosition returns the world position of this chunk (corner)
@@ -100,17 +108,7 @@ func (c *Chunk) WorldPosition() mgl32.Vec3 {
 // GenerateMesh creates a mesh for this chunk using greedy meshing
 func (c *Chunk) GenerateMesh() *Mesh {
 	// Convert to our expected 3D format
-	blocks3D := convertNetworkBlocksTo3DArray(c.Blocks, c.Size, c.Size, c.Size)
-
-	// Create a mesh using greedy meshing
-	c.Mesh = GreedyMeshChunk(blocks3D, c.WorldPosition())
-	return c.Mesh
-}
-
-// GeneratePackedMesh creates a mesh with packed vertices for this chunk
-func (c *Chunk) GeneratePackedMesh() *Mesh {
-	// Convert to our expected 3D format
-	blocks3D := convertNetworkBlocksTo3DArray(c.Blocks, c.Size, c.Size, c.Size)
+	blocks3D := convertTo3DArray(c.Blocks, c.Size)
 
 	// Create a mesh using greedy meshing
 	c.Mesh = GreedyMeshChunk(blocks3D, c.WorldPosition())
@@ -149,19 +147,33 @@ func (c *Chunk) ForEachNeighbor(fn func(x, y, z int32)) {
 	}
 }
 
-// convertNetworkBlocksTo3DArray converts a flat 1D array of network.BlockType to a 3D array of BlockType
-func convertNetworkBlocksTo3DArray(flatBlocks []BlockType, sizeX, sizeY, sizeZ int) [][][]BlockType {
-	blocks := make([][][]BlockType, sizeX)
-	for x := 0; x < sizeX; x++ {
-		blocks[x] = make([][]BlockType, sizeY)
-		for y := 0; y < sizeY; y++ {
-			blocks[x][y] = make([]BlockType, sizeZ)
-			for z := 0; z < sizeZ; z++ {
-				index := x*sizeY*sizeZ + y*sizeZ + z
+// convertTo3DArray converts a flat 1D array of BlockType to a 3D array
+// This function swaps X and Z coordinates to fix the coordinate system mismatch with the server
+func convertTo3DArray(flatBlocks []BlockType, size int) [][][]BlockType {
+	// We need to initialize the array with dimensions that match how we'll access it
+	// Since we're swapping X and Z, we need to initialize as [size][size][size]
+	blocks := make([][][]BlockType, size)
+	for i := 0; i < size; i++ {
+		blocks[i] = make([][]BlockType, size)
+		for j := 0; j < size; j++ {
+			blocks[i][j] = make([]BlockType, size)
+		}
+	}
+
+	// Now we fill the array with swapped coordinates
+	for x := 0; x < size; x++ {
+		for y := 0; y < size; y++ {
+			for z := 0; z < size; z++ {
+				// Use the original index calculation to access the flat array
+				index := x*size*size + y*size + z
+
+				// Here we swap X and Z when storing in the 3D array
+				// Original coordinates (x,y,z) become (z,y,x) in the 3D array
 				if index < len(flatBlocks) {
-					blocks[x][y][z] = BlockType(flatBlocks[index])
+					// Put the voxel at the swapped coordinates
+					blocks[z][y][x] = flatBlocks[index]
 				} else {
-					blocks[x][y][z] = Air
+					blocks[z][y][x] = Air
 				}
 			}
 		}

@@ -347,6 +347,8 @@ func (bo *BufferObject) UpdateIndirectCommands(commands []DrawElementsIndirectCo
 	// Only update if we have commands and they fit in the buffer
 	if len(commands) > 0 && sizeInBytes <= bo.Size {
 		gl.BufferSubData(gl.DRAW_INDIRECT_BUFFER, 0, sizeInBytes, gl.Ptr(commands))
+	} else {
+		panic("Buffer is not large enough to hold the commands")
 	}
 }
 

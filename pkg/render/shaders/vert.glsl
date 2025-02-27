@@ -4,7 +4,6 @@ layout (location = 0) in uint a_packedVertex;
 uniform mat4 model;
 uniform mat4 view;
 uniform mat4 projection;
-uniform vec3 chunkPosition;
 
 // Add buffer for chunk positions (one entry per chunk)
 // This will be indexed by gl_DrawID when using MultiDrawElementsIndirect
@@ -17,13 +16,14 @@ out vec3 FragPos;
 out vec3 Color;
 
 // Lookup tables for face normals based on orientation
+// Updated to match the swapped X and Z coordinate system
 const vec3 NORMALS[6] = vec3[6](
-    vec3(0, 0, -1),  // North
-    vec3(0, 0, 1),   // South
-    vec3(1, 0, 0),   // East
-    vec3(-1, 0, 0),  // West
-    vec3(0, 1, 0),   // Up
-    vec3(0, -1, 0)   // Down
+    vec3(-1, 0, 0),  // North (originally -Z, now -X)
+    vec3(1, 0, 0),   // South (originally +Z, now +X)
+    vec3(0, 0, 1),   // East (originally +X, now +Z)
+    vec3(0, 0, -1),  // West (originally -X, now -Z)
+    vec3(0, 1, 0),   // Up (unchanged)
+    vec3(0, -1, 0)   // Down (unchanged)
 );
 
 // Lookup table for block colors based on texture ID
@@ -58,9 +58,10 @@ float getAmbientOcclusionFactor(uint aoValue) {
 void main()
 {
     // Unpack vertex data
-    int a_x =                   int((a_packedVertex >> 0)  & 31);
+    // Note: X and Z are swapped in the packed format to match server coordinates
+    int a_z =                   int((a_packedVertex >> 0)  & 31);  // This is actually the Z coordinate
     int a_y =                   int((a_packedVertex >> 5)  & 31);
-    int a_z =                   int((a_packedVertex >> 10) & 31);
+    int a_x =                   int((a_packedVertex >> 10) & 31);  // This is actually the X coordinate
     int a_u =                   int((a_packedVertex >> 15) & 1);
     int a_v =                   int((a_packedVertex >> 16) & 1);
     uint a_orientation =           ((a_packedVertex >> 17) & 7);
@@ -74,9 +75,6 @@ void main()
     // When using MultiDrawElementsIndirect, gl_DrawID contains the current draw command index
     if (gl_DrawID < chunkPositionsBuffer.length()) {
         currentChunkPosition = chunkPositionsBuffer[gl_DrawID].xyz;
-    } else {
-        // Fallback to uniform (used when not using multi-draw)
-        currentChunkPosition = chunkPosition;
     }
     
     // Get position in world space by combining local vertex position with chunk position

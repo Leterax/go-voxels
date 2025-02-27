@@ -8,28 +8,29 @@ import (
 type Direction int
 
 const (
-	North Direction = iota // -Z
-	South                  // +Z
-	East                   // +X
-	West                   // -X
-	Up                     // +Y
-	Down                   // -Y
+	North Direction = iota // -Z  (now -X after swap)
+	South                  // +Z  (now +X after swap)
+	East                   // +X  (now +Z after swap)
+	West                   // -X  (now -Z after swap)
+	Up                     // +Y  (unchanged)
+	Down                   // -Y  (unchanged)
 )
 
 // DirectionVector returns the unit vector for a direction
+// Updated to account for swapped X and Z coordinates
 func (d Direction) DirectionVector() mgl32.Vec3 {
 	switch d {
-	case North:
-		return mgl32.Vec3{0, 0, -1}
-	case South:
-		return mgl32.Vec3{0, 0, 1}
-	case East:
-		return mgl32.Vec3{1, 0, 0}
-	case West:
+	case North: // Originally -Z, now -X
 		return mgl32.Vec3{-1, 0, 0}
-	case Up:
+	case South: // Originally +Z, now +X
+		return mgl32.Vec3{1, 0, 0}
+	case East: // Originally +X, now +Z
+		return mgl32.Vec3{0, 0, 1}
+	case West: // Originally -X, now -Z
+		return mgl32.Vec3{0, 0, -1}
+	case Up: // +Y (unchanged)
 		return mgl32.Vec3{0, 1, 0}
-	case Down:
+	case Down: // -Y (unchanged)
 		return mgl32.Vec3{0, -1, 0}
 	default:
 		return mgl32.Vec3{0, 0, 0}
@@ -47,14 +48,18 @@ type PackedVertex struct {
 // o: Orientation/face direction (3 bits, 0-7)
 // t: Texture ID from block type (8 bits, 0-255)
 // ao: Ambient occlusion (3 bits, 0-7)
+// This function swaps X and Z coordinates to match the server's coordinate system
 func PackVertex(x, y, z, u, v, o, t, ao int) uint32 {
 	// 4 bytes, 32 bits
 	// 00000000000000000000000000000000
 	//  aaattttttttooouvzzzzzyyyyyxxxxx
+
+	// Swap x and z coordinates to correct the orientation
+	// This makes the coordinates match the server's coordinate system
 	return uint32(
-		((x & 31) << 0) |
-			((y & 31) << 5) |
-			((z & 31) << 10) |
+		((z & 31) << 0) | // Use z for the x position bits
+			((y & 31) << 5) | // y remains the same
+			((x & 31) << 10) | // Use x for the z position bits
 			((u & 1) << 15) |
 			((v & 1) << 16) |
 			((o & 7) << 17) |
@@ -139,391 +144,335 @@ func GreedyMeshChunk(voxels [][][]BlockType, chunkPos mgl32.Vec3) *Mesh {
 		return mesh
 	}
 
-	// Create a mask for visited voxels during face merging
-	visited := make([][][]bool, sizeX)
-	for x := 0; x < sizeX; x++ {
-		visited[x] = make([][]bool, sizeY)
-		for y := 0; y < sizeY; y++ {
-			visited[x][y] = make([]bool, sizeZ)
-		}
-	}
-
-	// Process each direction separately
-	for dim := 0; dim < 6; dim++ {
-		dir := Direction(dim)
-
-		// Reset the visited mask for this direction
-		for x := 0; x < sizeX; x++ {
-			for y := 0; y < sizeY; y++ {
-				for z := 0; z < sizeZ; z++ {
-					visited[x][y][z] = false
-				}
-			}
-		}
-
-		// Determine the axis based on direction
-		var u, v, w int
+	// Process each axis direction separately
+	for axis := 0; axis < 3; axis++ {
+		// Define the dimensions and axes based on the current main axis
+		var uAxis, vAxis int
 		var maskSize [3]int
 
-		switch dir {
-		case North, South: // Z axis
-			u, v, w = 0, 1, 2
+		if axis == 0 { // X-axis faces (YZ plane)
+			uAxis, vAxis = 1, 2 // Y, Z
 			maskSize = [3]int{sizeX, sizeY, sizeZ}
-		case East, West: // X axis
-			u, v, w = 2, 1, 0
-			maskSize = [3]int{sizeZ, sizeY, sizeX}
-		case Up, Down: // Y axis
-			u, v, w = 0, 2, 1
-			maskSize = [3]int{sizeX, sizeZ, sizeY}
+		} else if axis == 1 { // Y-axis faces (XZ plane)
+			uAxis, vAxis = 0, 2 // X, Z
+			maskSize = [3]int{sizeX, sizeY, sizeZ}
+		} else { // Z-axis faces (XY plane)
+			uAxis, vAxis = 0, 1 // X, Y
+			maskSize = [3]int{sizeX, sizeY, sizeZ}
 		}
 
-		// Determine the range for the main axis
-		wStart, wEnd, wStep := 0, maskSize[w], 1
-		if dir == South || dir == East || dir == Up {
-			wStart, wEnd = maskSize[w]-1, -1
-			wStep = -1
-		}
+		// For each face coordinate along axis d
+		for x := 0; x <= maskSize[axis]; x++ {
+			// Create masks for this slice
+			maskPos := make([][]bool, maskSize[uAxis])
+			maskNeg := make([][]bool, maskSize[uAxis])
+			idsPos := make([][]BlockType, maskSize[uAxis])
+			idsNeg := make([][]BlockType, maskSize[uAxis])
 
-		// Iterate through the volume along main axis
-		for w0 := wStart; w0 != wEnd; w0 += wStep {
-			// Create a 2D array for the mask
-			mask := make([][]BlockType, maskSize[u])
-			for i := 0; i < maskSize[u]; i++ {
-				mask[i] = make([]BlockType, maskSize[v])
-				for j := 0; j < maskSize[v]; j++ {
-					// Initialize with air
-					mask[i][j] = Air
-				}
+			for i := 0; i < maskSize[uAxis]; i++ {
+				maskPos[i] = make([]bool, maskSize[vAxis])
+				maskNeg[i] = make([]bool, maskSize[vAxis])
+				idsPos[i] = make([]BlockType, maskSize[vAxis])
+				idsNeg[i] = make([]BlockType, maskSize[vAxis])
 			}
 
-			// For each slice, create a mask of visible faces
-			for v0 := 0; v0 < maskSize[v]; v0++ {
-				for u0 := 0; u0 < maskSize[u]; u0++ {
-					// Get voxel coordinates based on direction
-					var x, y, z int
+			// Fill the masks based on voxel visibility
+			if 0 < x && x < maskSize[axis] {
+				// Interior faces
+				for u := 0; u < maskSize[uAxis]; u++ {
+					for v := 0; v < maskSize[vAxis]; v++ {
+						// Convert 2D mask coordinates to 3D voxel coordinates
+						var pos, neg [3]int
+						pos[axis] = x
+						neg[axis] = x - 1
+						pos[uAxis] = u
+						neg[uAxis] = u
+						pos[vAxis] = v
+						neg[vAxis] = v
 
-					switch dir {
-					case North, South:
-						x, y, z = u0, v0, w0
-					case East, West:
-						x, y, z = w0, v0, u0
-					case Up, Down:
-						x, y, z = u0, w0, v0
-					}
+						// Get voxel types
+						var posFilled, negFilled bool
+						var posID, negID BlockType
 
-					// Skip if already visited
-					if visited[x][y][z] {
-						continue
-					}
-
-					// Check face visibility: if this block isn't air and either the adjacent block is air
-					// or it's the edge of the chunk
-					blockType := voxels[x][y][z]
-					if blockType == Air {
-						continue // Skip air blocks
-					}
-
-					// Get adjacent block coordinates
-					nx, ny, nz := x, y, z
-					switch dir {
-					case North:
-						nz--
-					case South:
-						nz++
-					case East:
-						nx++
-					case West:
-						nx--
-					case Up:
-						ny++
-					case Down:
-						ny--
-					}
-
-					// Check if adjacent block is outside the chunk or is air
-					isVisible := false
-					if nx < 0 || nx >= sizeX || ny < 0 || ny >= sizeY || nz < 0 || nz >= sizeZ {
-						isVisible = true // Edge of chunk
-					} else if voxels[nx][ny][nz] == Air {
-						isVisible = true // Adjacent to air
-					} else if voxels[nx][ny][nz] != blockType {
-						isVisible = true // Adjacent to different block type
-					}
-
-					if isVisible {
-						mask[u0][v0] = blockType
-					}
-				}
-			}
-
-			// Now perform greedy meshing on the 2D mask
-			for v0 := 0; v0 < maskSize[v]; v0++ {
-				for u0 := 0; u0 < maskSize[u]; u0++ {
-					// Skip if already visited or air
-					blockType := mask[u0][v0]
-					if blockType == Air {
-						continue
-					}
-
-					// Get voxel coordinates
-					var x, y, z int
-					switch dir {
-					case North, South:
-						x, y, z = u0, v0, w0
-					case East, West:
-						x, y, z = w0, v0, u0
-					case Up, Down:
-						x, y, z = u0, w0, v0
-					}
-
-					// Skip if already processed
-					if visited[x][y][z] {
-						continue
-					}
-
-					// Find the maximum width of the face (along u)
-					width := 1
-					for u1 := u0 + 1; u1 < maskSize[u]; u1++ {
-						// Stop if the block type changes or we hit a visited block
-						var nextX, nextY, nextZ int
-						switch dir {
-						case North, South:
-							nextX, nextY, nextZ = u1, v0, w0
-						case East, West:
-							nextX, nextY, nextZ = w0, v0, u1
-						case Up, Down:
-							nextX, nextY, nextZ = u1, w0, v0
+						// Safely get the voxel types
+						if pos[0] >= 0 && pos[0] < sizeX && pos[1] >= 0 && pos[1] < sizeY && pos[2] >= 0 && pos[2] < sizeZ {
+							posID = voxels[pos[0]][pos[1]][pos[2]]
+							posFilled = posID != Air
 						}
 
-						if mask[u1][v0] != blockType || visited[nextX][nextY][nextZ] {
+						if neg[0] >= 0 && neg[0] < sizeX && neg[1] >= 0 && neg[1] < sizeY && neg[2] >= 0 && neg[2] < sizeZ {
+							negID = voxels[neg[0]][neg[1]][neg[2]]
+							negFilled = negID != Air
+						}
+
+						// Set masks and ids
+						if negFilled && !posFilled {
+							maskPos[u][v] = true
+							idsPos[u][v] = negID
+						}
+
+						if posFilled && !negFilled {
+							maskNeg[u][v] = true
+							idsNeg[u][v] = posID
+						}
+					}
+				}
+			} else if x == 0 {
+				// Negative boundary
+				for u := 0; u < maskSize[uAxis]; u++ {
+					for v := 0; v < maskSize[vAxis]; v++ {
+						var pos [3]int
+						pos[axis] = 0
+						pos[uAxis] = u
+						pos[vAxis] = v
+
+						if pos[0] >= 0 && pos[0] < sizeX && pos[1] >= 0 && pos[1] < sizeY && pos[2] >= 0 && pos[2] < sizeZ {
+							posID := voxels[pos[0]][pos[1]][pos[2]]
+							if posID != Air {
+								maskNeg[u][v] = true
+								idsNeg[u][v] = posID
+							}
+						}
+					}
+				}
+			} else if x == maskSize[axis] {
+				// Positive boundary
+				for u := 0; u < maskSize[uAxis]; u++ {
+					for v := 0; v < maskSize[vAxis]; v++ {
+						var neg [3]int
+						neg[axis] = x - 1
+						neg[uAxis] = u
+						neg[vAxis] = v
+
+						if neg[0] >= 0 && neg[0] < sizeX && neg[1] >= 0 && neg[1] < sizeY && neg[2] >= 0 && neg[2] < sizeZ {
+							negID := voxels[neg[0]][neg[1]][neg[2]]
+							if negID != Air {
+								maskPos[u][v] = true
+								idsPos[u][v] = negID
+							}
+						}
+					}
+				}
+			}
+
+			// Process both face directions
+			for maskDir := 0; maskDir < 2; maskDir++ {
+				var mask [][]bool
+				var ids [][]BlockType
+				var normalSign int
+
+				if maskDir == 0 {
+					mask = maskPos
+					ids = idsPos
+					normalSign = 1
+				} else {
+					mask = maskNeg
+					ids = idsNeg
+					normalSign = -1
+				}
+
+				// Check if there are any faces to process
+				hasFaces := false
+				for u := 0; u < maskSize[uAxis]; u++ {
+					for v := 0; v < maskSize[vAxis]; v++ {
+						if mask[u][v] {
+							hasFaces = true
 							break
 						}
-						width++
 					}
+					if hasFaces {
+						break
+					}
+				}
 
-					// Find the maximum height of the face (along v)
-					height := 1
-					canExtend := true
-					for v1 := v0 + 1; v1 < maskSize[v] && canExtend; v1++ {
-						// Check if we can extend the entire row
-						for u1 := u0; u1 < u0+width; u1++ {
-							var nextX, nextY, nextZ int
-							switch dir {
-							case North, South:
-								nextX, nextY, nextZ = u1, v1, w0
-							case East, West:
-								nextX, nextY, nextZ = w0, v1, u1
-							case Up, Down:
-								nextX, nextY, nextZ = u1, w0, v1
+				if !hasFaces {
+					continue
+				}
+
+				// Track visited cells
+				visited := make([][]bool, maskSize[uAxis])
+				for i := range visited {
+					visited[i] = make([]bool, maskSize[vAxis])
+				}
+
+				// Extract rectangles (similar to Python's extract_rectangles)
+				for u := 0; u < maskSize[uAxis]; u++ {
+					for v := 0; v < maskSize[vAxis]; v++ {
+						if !mask[u][v] || visited[u][v] {
+							continue
+						}
+
+						// Get the block type
+						blockType := ids[u][v]
+
+						// Find width (along v-axis)
+						width := 1
+						for width+v < maskSize[vAxis] && mask[u][v+width] && !visited[u][v+width] && ids[u][v+width] == blockType {
+							width++
+						}
+
+						// Find height (along u-axis)
+						height := 1
+						canExtend := true
+
+						for height+u < maskSize[uAxis] && canExtend {
+							// Check if we can extend the entire row
+							for i := 0; i < width; i++ {
+								if !mask[u+height][v+i] || visited[u+height][v+i] || ids[u+height][v+i] != blockType {
+									canExtend = false
+									break
+								}
 							}
 
-							if mask[u1][v1] != blockType || visited[nextX][nextY][nextZ] {
-								canExtend = false
-								break
+							if canExtend {
+								height++
 							}
 						}
 
-						if canExtend {
-							height++
-						}
-					}
-
-					// Mark all covered voxels as visited
-					for v1 := v0; v1 < v0+height; v1++ {
-						for u1 := u0; u1 < u0+width; u1++ {
-							var visitX, visitY, visitZ int
-							switch dir {
-							case North, South:
-								visitX, visitY, visitZ = u1, v1, w0
-							case East, West:
-								visitX, visitY, visitZ = w0, v1, u1
-							case Up, Down:
-								visitX, visitY, visitZ = u1, w0, v1
+						// Mark as visited
+						for i := 0; i < height; i++ {
+							for j := 0; j < width; j++ {
+								visited[u+i][v+j] = true
 							}
-
-							visited[visitX][visitY][visitZ] = true
 						}
+
+						// Create a face
+						// Base position
+						pos := [3]int{0, 0, 0}
+						pos[axis] = x
+						pos[uAxis] = u
+						pos[vAxis] = v
+
+						// Create vertices
+						var v0, v1, v2, v3 [3]int
+						v0[0] = pos[0]
+						v0[1] = pos[1]
+						v0[2] = pos[2]
+						v1[0] = pos[0]
+						v1[1] = pos[1]
+						v1[2] = pos[2]
+						v2[0] = pos[0]
+						v2[1] = pos[1]
+						v2[2] = pos[2]
+						v3[0] = pos[0]
+						v3[1] = pos[1]
+						v3[2] = pos[2]
+
+						// Adjust vertices based on direction and normal sign
+						// Match the Python logic for correct winding order
+						if axis == 1 { // Y-axis faces need special handling
+							if normalSign > 0 { // Top face (normal points up)
+								// Counter-clockwise when looking down from above
+								v1[vAxis] += width  // Forward
+								v2[uAxis] += height // Right + Forward
+								v2[vAxis] += width
+								v3[uAxis] += height // Right
+							} else { // Bottom face (normal points down)
+								// Counter-clockwise when looking up from below
+								v1[uAxis] += height // Right
+								v2[uAxis] += height // Right + Forward
+								v2[vAxis] += width
+								v3[vAxis] += width // Forward
+							}
+						} else { // X and Z axis faces
+							if normalSign > 0 { // Normal points positive
+								v1[uAxis] += height // Up
+								v2[uAxis] += height // Up + Right
+								v2[vAxis] += width
+								v3[vAxis] += width // Right
+							} else { // Normal points negative
+								v1[vAxis] += width  // Right
+								v2[uAxis] += height // Up + Right
+								v2[vAxis] += width
+								v3[uAxis] += height // Up
+							}
+						}
+
+						// Calculate normal
+						normal := [3]int{0, 0, 0}
+						normal[axis] = normalSign
+
+						// Convert to world positions
+						worldPos := func(localPos [3]int) mgl32.Vec3 {
+							return mgl32.Vec3{
+								float32(localPos[0]) + chunkPos[0],
+								float32(localPos[1]) + chunkPos[1],
+								float32(localPos[2]) + chunkPos[2],
+							}
+						}
+
+						// Convert to Vec3
+						p0 := worldPos(v0)
+						p1 := worldPos(v1)
+						p2 := worldPos(v2)
+						p3 := worldPos(v3)
+
+						// Determine orientation (0-5 for the 6 cardinal directions)
+						var orientation int
+						if axis == 0 {
+							if normalSign > 0 {
+								orientation = int(East)
+							} else {
+								orientation = int(West)
+							}
+						} else if axis == 1 {
+							if normalSign > 0 {
+								orientation = int(Up)
+							} else {
+								orientation = int(Down)
+							}
+						} else { // axis == 2
+							if normalSign > 0 {
+								orientation = int(South)
+							} else {
+								orientation = int(North)
+							}
+						}
+
+						// Get texture ID from block type (limit to 8 bits)
+						textureID := int(blockType)
+						if textureID > 255 {
+							textureID = 255
+						}
+
+						// Default ambient occlusion
+						ambientOcclusion := 7
+
+						// Create local packed vertices for efficient rendering
+						// We need to ensure they are within the 5-bit range (0-31)
+						packedVertices := [4]uint32{
+							PackVertex(v0[0]%32, v0[1]%32, v0[2]%32, 0, 0, orientation, textureID, ambientOcclusion),
+							PackVertex(v1[0]%32, v1[1]%32, v1[2]%32, 1, 0, orientation, textureID, ambientOcclusion),
+							PackVertex(v2[0]%32, v2[1]%32, v2[2]%32, 1, 1, orientation, textureID, ambientOcclusion),
+							PackVertex(v3[0]%32, v3[1]%32, v3[2]%32, 0, 1, orientation, textureID, ambientOcclusion),
+						}
+
+						// Add packed vertices to mesh
+						mesh.AddPackedFace(packedVertices)
+
+						// Create normal vector for traditional face
+						faceNormal := mgl32.Vec3{float32(normal[0]), float32(normal[1]), float32(normal[2])}
+
+						// Calculate texture coordinates
+						t0 := mgl32.Vec2{0, 0}
+						t1 := mgl32.Vec2{float32(width), 0}
+						t2 := mgl32.Vec2{float32(width), float32(height)}
+						t3 := mgl32.Vec2{0, float32(height)}
+
+						// Create the traditional face for compatibility
+						face := Face{
+							BlockType: blockType,
+							Vertices: [4]Vertex{
+								{Position: p0, Normal: faceNormal, TexCoords: t0},
+								{Position: p1, Normal: faceNormal, TexCoords: t1},
+								{Position: p2, Normal: faceNormal, TexCoords: t2},
+								{Position: p3, Normal: faceNormal, TexCoords: t3},
+							},
+						}
+
+						// Add face to mesh
+						mesh.AddFace(face)
 					}
-
-					// Create a face using packed vertices
-					packedVertices := [4]uint32{}
-
-					// Determine orientation (0-5 for the 6 cardinal directions)
-					orientation := int(dir)
-
-					// Get texture ID from block type (limit to 8 bits)
-					textureID := int(blockType)
-					if textureID > 255 {
-						textureID = 255
-					}
-
-					// Default ambient occlusion value (can be calculated properly in a more advanced implementation)
-					ambientOcclusion := 7 // Max value for now
-
-					// Calculate local positions within chunk (0-31 range)
-					// These are calculated from the face corners, ensuring we stay within 5-bit range
-					var x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3 int
-
-					// Adjust positions based on direction to work within our 5-bit constraints
-					switch dir {
-					case North: // Facing -Z
-						x0 = u0 % 32
-						y0 = v0 % 32
-						z0 = w0 % 32
-						x1 = (u0 + width) % 32
-						y1 = v0 % 32
-						z1 = w0 % 32
-						x2 = (u0 + width) % 32
-						y2 = (v0 + height) % 32
-						z2 = w0 % 32
-						x3 = u0 % 32
-						y3 = (v0 + height) % 32
-						z3 = w0 % 32
-					case South: // Facing +Z
-						x0 = (u0 + width) % 32
-						y0 = v0 % 32
-						z0 = (w0 + 1) % 32
-						x1 = u0 % 32
-						y1 = v0 % 32
-						z1 = (w0 + 1) % 32
-						x2 = u0 % 32
-						y2 = (v0 + height) % 32
-						z2 = (w0 + 1) % 32
-						x3 = (u0 + width) % 32
-						y3 = (v0 + height) % 32
-						z3 = (w0 + 1) % 32
-					case East: // Facing +X
-						x0 = (w0 + 1) % 32
-						y0 = v0 % 32
-						z0 = (u0 + width) % 32
-						x1 = (w0 + 1) % 32
-						y1 = v0 % 32
-						z1 = u0 % 32
-						x2 = (w0 + 1) % 32
-						y2 = (v0 + height) % 32
-						z2 = u0 % 32
-						x3 = (w0 + 1) % 32
-						y3 = (v0 + height) % 32
-						z3 = (u0 + width) % 32
-					case West: // Facing -X
-						x0 = w0 % 32
-						y0 = v0 % 32
-						z0 = u0 % 32
-						x1 = w0 % 32
-						y1 = v0 % 32
-						z1 = (u0 + width) % 32
-						x2 = w0 % 32
-						y2 = (v0 + height) % 32
-						z2 = (u0 + width) % 32
-						x3 = w0 % 32
-						y3 = (v0 + height) % 32
-						z3 = u0 % 32
-					case Up: // Facing +Y
-						x0 = u0 % 32
-						y0 = (w0 + 1) % 32
-						z0 = (v0 + height) % 32
-						x1 = (u0 + width) % 32
-						y1 = (w0 + 1) % 32
-						z1 = (v0 + height) % 32
-						x2 = (u0 + width) % 32
-						y2 = (w0 + 1) % 32
-						z2 = v0 % 32
-						x3 = u0 % 32
-						y3 = (w0 + 1) % 32
-						z3 = v0 % 32
-					case Down: // Facing -Y
-						x0 = u0 % 32
-						y0 = w0 % 32
-						z0 = v0 % 32
-						x1 = (u0 + width) % 32
-						y1 = w0 % 32
-						z1 = v0 % 32
-						x2 = (u0 + width) % 32
-						y2 = w0 % 32
-						z2 = (v0 + height) % 32
-						x3 = u0 % 32
-						y3 = w0 % 32
-						z3 = (v0 + height) % 32
-					}
-
-					// Pack the vertices using the UV coordinates
-					packedVertices[0] = PackVertex(x0, y0, z0, 0, 0, orientation, textureID, ambientOcclusion)
-					packedVertices[1] = PackVertex(x1, y1, z1, 1, 0, orientation, textureID, ambientOcclusion)
-					packedVertices[2] = PackVertex(x2, y2, z2, 1, 1, orientation, textureID, ambientOcclusion)
-					packedVertices[3] = PackVertex(x3, y3, z3, 0, 1, orientation, textureID, ambientOcclusion)
-
-					// Add the packed face to the mesh
-					mesh.AddPackedFace(packedVertices)
-
-					// Also add the traditional face for compatibility
-					// Generate the face (two triangles)
-					face := Face{
-						BlockType: blockType,
-					}
-
-					// Calculate the face coordinates in 3D space
-					// Convert from voxel coordinates to world coordinates
-					faceNormal := dir.DirectionVector()
-
-					// World positions of the corners (add chunk position)
-					var p0, p1, p2, p3 mgl32.Vec3
-
-					// Adjust the vertex positions based on the direction
-					switch dir {
-					case North: // Facing -Z
-						p0 = mgl32.Vec3{float32(u0), float32(v0), float32(w0)}
-						p1 = mgl32.Vec3{float32(u0 + width), float32(v0), float32(w0)}
-						p2 = mgl32.Vec3{float32(u0 + width), float32(v0 + height), float32(w0)}
-						p3 = mgl32.Vec3{float32(u0), float32(v0 + height), float32(w0)}
-					case South: // Facing +Z
-						p0 = mgl32.Vec3{float32(u0 + width), float32(v0), float32(w0 + 1)}
-						p1 = mgl32.Vec3{float32(u0), float32(v0), float32(w0 + 1)}
-						p2 = mgl32.Vec3{float32(u0), float32(v0 + height), float32(w0 + 1)}
-						p3 = mgl32.Vec3{float32(u0 + width), float32(v0 + height), float32(w0 + 1)}
-					case East: // Facing +X
-						p0 = mgl32.Vec3{float32(w0 + 1), float32(v0), float32(u0 + width)}
-						p1 = mgl32.Vec3{float32(w0 + 1), float32(v0), float32(u0)}
-						p2 = mgl32.Vec3{float32(w0 + 1), float32(v0 + height), float32(u0)}
-						p3 = mgl32.Vec3{float32(w0 + 1), float32(v0 + height), float32(u0 + width)}
-					case West: // Facing -X
-						p0 = mgl32.Vec3{float32(w0), float32(v0), float32(u0)}
-						p1 = mgl32.Vec3{float32(w0), float32(v0), float32(u0 + width)}
-						p2 = mgl32.Vec3{float32(w0), float32(v0 + height), float32(u0 + width)}
-						p3 = mgl32.Vec3{float32(w0), float32(v0 + height), float32(u0)}
-					case Up: // Facing +Y
-						p0 = mgl32.Vec3{float32(u0), float32(w0 + 1), float32(v0 + height)}
-						p1 = mgl32.Vec3{float32(u0 + width), float32(w0 + 1), float32(v0 + height)}
-						p2 = mgl32.Vec3{float32(u0 + width), float32(w0 + 1), float32(v0)}
-						p3 = mgl32.Vec3{float32(u0), float32(w0 + 1), float32(v0)}
-					case Down: // Facing -Y
-						p0 = mgl32.Vec3{float32(u0), float32(w0), float32(v0)}
-						p1 = mgl32.Vec3{float32(u0 + width), float32(w0), float32(v0)}
-						p2 = mgl32.Vec3{float32(u0 + width), float32(w0), float32(v0 + height)}
-						p3 = mgl32.Vec3{float32(u0), float32(w0), float32(v0 + height)}
-					}
-
-					// Add chunk position
-					p0 = p0.Add(chunkPos)
-					p1 = p1.Add(chunkPos)
-					p2 = p2.Add(chunkPos)
-					p3 = p3.Add(chunkPos)
-
-					// Calculate texture coordinates based on block type and face direction
-					// For simplicity, we're using a basic mapping for now
-					// Texture mapping could be enhanced based on block type and atlas coordinates
-					t0 := mgl32.Vec2{0, 0}
-					t1 := mgl32.Vec2{float32(width), 0}
-					t2 := mgl32.Vec2{float32(width), float32(height)}
-					t3 := mgl32.Vec2{0, float32(height)}
-
-					// Set up the vertices in counter-clockwise winding order
-					face.Vertices[0] = Vertex{Position: p0, Normal: faceNormal, TexCoords: t0}
-					face.Vertices[1] = Vertex{Position: p1, Normal: faceNormal, TexCoords: t1}
-					face.Vertices[2] = Vertex{Position: p2, Normal: faceNormal, TexCoords: t2}
-					face.Vertices[3] = Vertex{Position: p3, Normal: faceNormal, TexCoords: t3}
-
-					// Add the face to the mesh
-					mesh.AddFace(face)
 				}
 			}
 		}
@@ -556,7 +505,7 @@ func ConvertTo3DArray(flatBlocks []BlockType, sizeX, sizeY, sizeZ int) [][][]Blo
 // GreedyMesh processes a flat array of block types and returns a mesh
 func GreedyMesh(flatBlocks []BlockType, chunkX, chunkY, chunkZ int32, chunkSize int) *Mesh {
 	// Convert chunk position to world coordinates
-	chunkPos := mgl32.Vec3{float32(chunkX * int32(chunkSize)), float32(chunkY * int32(chunkSize)), float32(chunkZ * int32(chunkSize))}
+	chunkPos := mgl32.Vec3{float32(chunkX), float32(chunkY), float32(chunkZ)}
 
 	// Convert flat array to 3D array
 	blocks := ConvertTo3DArray(flatBlocks, chunkSize, chunkSize, chunkSize)

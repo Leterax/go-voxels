@@ -163,7 +163,7 @@ func generateWorld() []*voxel.Chunk {
 		fillChunk(chunks[i])
 
 		// Generate mesh for the chunk - important for rendering!
-		chunks[i].GeneratePackedMesh()
+		chunks[i].GenerateMesh()
 	}
 	return chunks
 }
