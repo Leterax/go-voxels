@@ -513,3 +513,72 @@ func GreedyMesh(flatBlocks []BlockType, chunkX, chunkY, chunkZ int32, chunkSize 
 	// Generate mesh using greedy meshing
 	return GreedyMeshChunk(blocks, chunkPos)
 }
+
+// MonoChunkMesh generates a mesh for a chunk filled with a single block type
+// This is an optimization for chunks that contain only one type of block
+func MonoChunkMesh(chunk *Chunk, blockType BlockType) *Mesh {
+	// Create a new mesh
+	mesh := NewMesh()
+	size := chunk.Size
+
+	// Define the face orientations - one quad per side of the chunk
+	orientations := []struct {
+		vertices [4]uint32
+	}{
+		{ // +X face (right)
+			vertices: [4]uint32{
+				PackVertex(size, 0, 0, 0, 0, 0, int(blockType), 7),
+				PackVertex(size, size, 0, 0, 1, 0, int(blockType), 7),
+				PackVertex(size, size, size, 1, 1, 0, int(blockType), 7),
+				PackVertex(size, 0, size, 1, 0, 0, int(blockType), 7),
+			},
+		},
+		{ // -X face (left)
+			vertices: [4]uint32{
+				PackVertex(0, 0, size, 0, 0, 1, int(blockType), 7),
+				PackVertex(0, size, size, 0, 1, 1, int(blockType), 7),
+				PackVertex(0, size, 0, 1, 1, 1, int(blockType), 7),
+				PackVertex(0, 0, 0, 1, 0, 1, int(blockType), 7),
+			},
+		},
+		{ // +Y face (top)
+			vertices: [4]uint32{
+				PackVertex(0, size, 0, 0, 0, 2, int(blockType), 7),
+				PackVertex(0, size, size, 0, 1, 2, int(blockType), 7),
+				PackVertex(size, size, size, 1, 1, 2, int(blockType), 7),
+				PackVertex(size, size, 0, 1, 0, 2, int(blockType), 7),
+			},
+		},
+		{ // -Y face (bottom)
+			vertices: [4]uint32{
+				PackVertex(0, 0, size, 0, 0, 3, int(blockType), 7),
+				PackVertex(0, 0, 0, 0, 1, 3, int(blockType), 7),
+				PackVertex(size, 0, 0, 1, 1, 3, int(blockType), 7),
+				PackVertex(size, 0, size, 1, 0, 3, int(blockType), 7),
+			},
+		},
+		{ // +Z face (front)
+			vertices: [4]uint32{
+				PackVertex(0, 0, size, 0, 0, 4, int(blockType), 7),
+				PackVertex(size, 0, size, 0, 1, 4, int(blockType), 7),
+				PackVertex(size, size, size, 1, 1, 4, int(blockType), 7),
+				PackVertex(0, size, size, 1, 0, 4, int(blockType), 7),
+			},
+		},
+		{ // -Z face (back)
+			vertices: [4]uint32{
+				PackVertex(0, size, 0, 0, 0, 5, int(blockType), 7),
+				PackVertex(size, size, 0, 0, 1, 5, int(blockType), 7),
+				PackVertex(size, 0, 0, 1, 1, 5, int(blockType), 7),
+				PackVertex(0, 0, 0, 1, 0, 5, int(blockType), 7),
+			},
+		},
+	}
+
+	// Add all six faces to the mesh
+	for _, orientation := range orientations {
+		mesh.AddPackedFace(orientation.vertices)
+	}
+
+	return mesh
+}

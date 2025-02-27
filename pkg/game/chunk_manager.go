@@ -126,7 +126,7 @@ func (cm *ChunkManager) processMonoChunk(coord ChunkCoord, blockType voxel.Block
 	chunk.FillWithBlockType(blockType)
 
 	// For non-air mono chunks, we can use a simplified mesh generation
-	chunk.Mesh = cm.generateMonoChunkMesh(chunk, blockType)
+	chunk.Mesh = voxel.MonoChunkMesh(chunk, blockType)
 
 	// Store the chunk
 	cm.storeChunk(coord, chunk)
@@ -149,74 +149,6 @@ func (cm *ChunkManager) storeChunk(coord ChunkCoord, chunk *voxel.Chunk) {
 	cm.chunksMutex.Lock()
 	cm.chunks[coord] = chunk
 	cm.chunksMutex.Unlock()
-}
-
-// generateMonoChunkMesh generates a mesh for a mono-type chunk without using greedy meshing
-func (cm *ChunkManager) generateMonoChunkMesh(chunk *voxel.Chunk, blockType voxel.BlockType) *voxel.Mesh {
-	// Create a new mesh
-	mesh := voxel.NewMesh()
-	size := chunk.Size
-
-	// Define the face orientations - one quad per side of the chunk
-	orientations := []struct {
-		vertices [4]uint32
-	}{
-		{ // +X face (right)
-			vertices: [4]uint32{
-				voxel.PackVertex(size, 0, 0, 0, 0, 0, int(blockType), 7),
-				voxel.PackVertex(size, size, 0, 0, 1, 0, int(blockType), 7),
-				voxel.PackVertex(size, size, size, 1, 1, 0, int(blockType), 7),
-				voxel.PackVertex(size, 0, size, 1, 0, 0, int(blockType), 7),
-			},
-		},
-		{ // -X face (left)
-			vertices: [4]uint32{
-				voxel.PackVertex(0, 0, size, 0, 0, 1, int(blockType), 7),
-				voxel.PackVertex(0, size, size, 0, 1, 1, int(blockType), 7),
-				voxel.PackVertex(0, size, 0, 1, 1, 1, int(blockType), 7),
-				voxel.PackVertex(0, 0, 0, 1, 0, 1, int(blockType), 7),
-			},
-		},
-		{ // +Y face (top)
-			vertices: [4]uint32{
-				voxel.PackVertex(0, size, 0, 0, 0, 2, int(blockType), 7),
-				voxel.PackVertex(0, size, size, 0, 1, 2, int(blockType), 7),
-				voxel.PackVertex(size, size, size, 1, 1, 2, int(blockType), 7),
-				voxel.PackVertex(size, size, 0, 1, 0, 2, int(blockType), 7),
-			},
-		},
-		{ // -Y face (bottom)
-			vertices: [4]uint32{
-				voxel.PackVertex(0, 0, size, 0, 0, 3, int(blockType), 7),
-				voxel.PackVertex(0, 0, 0, 0, 1, 3, int(blockType), 7),
-				voxel.PackVertex(size, 0, 0, 1, 1, 3, int(blockType), 7),
-				voxel.PackVertex(size, 0, size, 1, 0, 3, int(blockType), 7),
-			},
-		},
-		{ // +Z face (front)
-			vertices: [4]uint32{
-				voxel.PackVertex(0, 0, size, 0, 0, 4, int(blockType), 7),
-				voxel.PackVertex(size, 0, size, 0, 1, 4, int(blockType), 7),
-				voxel.PackVertex(size, size, size, 1, 1, 4, int(blockType), 7),
-				voxel.PackVertex(0, size, size, 1, 0, 4, int(blockType), 7),
-			},
-		},
-		{ // -Z face (back)
-			vertices: [4]uint32{
-				voxel.PackVertex(0, size, 0, 0, 0, 5, int(blockType), 7),
-				voxel.PackVertex(size, size, 0, 0, 1, 5, int(blockType), 7),
-				voxel.PackVertex(size, 0, 0, 1, 1, 5, int(blockType), 7),
-				voxel.PackVertex(0, 0, 0, 1, 0, 5, int(blockType), 7),
-			},
-		},
-	}
-
-	// Add all six faces to the mesh
-	for _, orientation := range orientations {
-		mesh.AddPackedFace(orientation.vertices)
-	}
-
-	return mesh
 }
 
 // GetChunks returns a slice of all chunks for rendering
