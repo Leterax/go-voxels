@@ -365,7 +365,7 @@ func (c *Client) handleSendChunk() error {
 
 	// Convert to BlockType slice
 	blocks := make([]voxel.BlockType, chunkDataSize)
-	for i := 0; i < chunkDataSize; i++ {
+	for i := range chunkDataSize {
 		blocks[i] = voxel.BlockType(chunkData[i])
 	}
 
@@ -456,9 +456,4 @@ func (c *Client) handleUpdateEntityMetadata() error {
 func float32ToUint32(f float32) uint32 {
 	bits := math.Float32bits(f)
 	return bits
-}
-
-// Helper function to convert uint32 to float32 for binary decoding
-func uint32ToFloat32(u uint32) float32 {
-	return math.Float32frombits(u)
 }

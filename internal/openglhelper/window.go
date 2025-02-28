@@ -5,6 +5,7 @@ import (
 
 	"github.com/go-gl/gl/v4.6-core/gl"
 	"github.com/go-gl/glfw/v3.3/glfw"
+	"github.com/go-gl/mathgl/mgl32"
 )
 
 // Window handles GLFW window creation and management
@@ -57,7 +58,6 @@ func NewWindow(width, height int, title string, vsync bool) (*Window, error) {
 	// Configure global OpenGL state
 	gl.Enable(gl.DEPTH_TEST)
 	gl.DepthFunc(gl.LESS)
-	gl.ClearColor(0.1, 0.1, 0.1, 1.0)
 
 	return &Window{
 		glfwWindow:    glfwWindow,
@@ -69,9 +69,9 @@ func NewWindow(width, height int, title string, vsync bool) (*Window, error) {
 }
 
 // Clear clears the screen
-func (w *Window) Clear() {
+func (w *Window) Clear(color mgl32.Vec4) {
 	// Set clear color to a dark purple to distinguish from black objects
-	gl.ClearColor(0.2, 0.0, 0.3, 1.0)
+	gl.ClearColor(color.X(), color.Y(), color.Z(), color.W())
 	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 }
 

@@ -68,17 +68,17 @@ func IndexToLocal(index, chunkSize int) (x, y, z int) {
 func ConvertTo3DArray(flatBlocks []BlockType, sizeX, sizeY, sizeZ int, swapCoords bool) [][][]BlockType {
 	// Initialize the 3D array based on dimensions
 	blocks := make([][][]BlockType, sizeX)
-	for i := 0; i < sizeX; i++ {
+	for i := range sizeX {
 		blocks[i] = make([][]BlockType, sizeY)
-		for j := 0; j < sizeY; j++ {
+		for j := range sizeY {
 			blocks[i][j] = make([]BlockType, sizeZ)
 		}
 	}
 
 	// Fill the array with data from the flat array
-	for x := 0; x < sizeX; x++ {
-		for y := 0; y < sizeY; y++ {
-			for z := 0; z < sizeZ; z++ {
+	for x := range sizeX {
+		for y := range sizeY {
+			for z := range sizeZ {
 				// Calculate index in flat array
 				index := x*sizeY*sizeZ + y*sizeZ + z
 

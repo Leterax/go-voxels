@@ -1,3 +1,5 @@
+// Package openglhelper provides utilities for working with OpenGL buffers and other resources.
+// It wraps the low-level OpenGL functions in a more Go-friendly API.
 package openglhelper
 
 import (
@@ -7,7 +9,21 @@ import (
 	"github.com/go-gl/gl/v4.6-core/gl"
 )
 
+// DrawElementsIndirectCommand represents the structure for a single indirect draw command
+// used with OpenGL's multi-draw indirect rendering.
+type DrawElementsIndirectCommand struct {
+	Count         uint32 // Number of indices to render
+	InstanceCount uint32 // Number of instances to render
+	FirstIndex    uint32 // Starting index in the index buffer
+	BaseVertex    int32  // Base vertex to add to each index
+	BaseInstance  uint32 // Base instance for instanced attributes
+}
+
+// Size of the DrawElementsIndirectCommand struct in bytes
+const DrawElementsIndirectCommandSize = int(unsafe.Sizeof(DrawElementsIndirectCommand{}))
+
 // BufferObject represents an OpenGL buffer object (VBO, EBO, SSBO, etc.)
+// It provides a higher-level abstraction over raw OpenGL buffer IDs and operations.
 type BufferObject struct {
 	ID         uint32
 	Type       uint32         // GL_ARRAY_BUFFER, GL_ELEMENT_ARRAY_BUFFER, GL_SHADER_STORAGE_BUFFER, etc.
@@ -18,122 +34,60 @@ type BufferObject struct {
 	Persistent bool           // Whether the buffer is persistently mapped
 }
 
-// BufferUsage represents different buffer usage patterns
+// BufferUsage represents different buffer usage patterns for OpenGL buffers.
 type BufferUsage uint32
 
 const (
-	// Static buffers - data is set once and used many times
+	// StaticDraw indicates buffer contents will be specified once and used many times for drawing
 	StaticDraw BufferUsage = gl.STATIC_DRAW
+	// StaticRead indicates buffer contents will be specified once and read many times by the application
 	StaticRead BufferUsage = gl.STATIC_READ
+	// StaticCopy indicates buffer contents will be specified once and used many times to copy data
 	StaticCopy BufferUsage = gl.STATIC_COPY
 
-	// Dynamic buffers - data is changed frequently and used many times
+	// DynamicDraw indicates buffer contents will be changed frequently and used many times for drawing
 	DynamicDraw BufferUsage = gl.DYNAMIC_DRAW
+	// DynamicRead indicates buffer contents will be changed frequently and read many times by the application
 	DynamicRead BufferUsage = gl.DYNAMIC_READ
+	// DynamicCopy indicates buffer contents will be changed frequently and used many times to copy data
 	DynamicCopy BufferUsage = gl.DYNAMIC_COPY
 
-	// Stream buffers - data is set once and used a few times
+	// StreamDraw indicates buffer contents will be specified once and used a few times for drawing
 	StreamDraw BufferUsage = gl.STREAM_DRAW
+	// StreamRead indicates buffer contents will be specified once and read a few times by the application
 	StreamRead BufferUsage = gl.STREAM_READ
+	// StreamCopy indicates buffer contents will be specified once and used a few times to copy data
 	StreamCopy BufferUsage = gl.STREAM_COPY
 )
 
-// VertexArrayObject represents an OpenGL vertex array object (VAO)
+// VertexArrayObject represents an OpenGL vertex array object (VAO) that stores vertex attribute configurations.
 type VertexArrayObject struct {
 	ID uint32
 }
 
-// DrawElementsIndirectCommand represents the structure for a single indirect draw command
-type DrawElementsIndirectCommand struct {
-	Count         uint32 // Number of indices to render
-	InstanceCount uint32 // Number of instances to render
-	FirstIndex    uint32 // Starting index in the index buffer
-	BaseVertex    int32  // Base vertex to add to each index
-	BaseInstance  uint32 // Base instance for instanced attributes
-}
+// NewBufferObject creates a general buffer object with the specified parameters.
+// It returns a new BufferObject initialized with the given type, size, data, and usage.
+func NewBufferObject(bufferType uint32, sizeInBytes int, data unsafe.Pointer, usage BufferUsage) *BufferObject {
+	var bufferID uint32
+	gl.GenBuffers(1, &bufferID)
 
-// Size of the DrawElementsIndirectCommand struct in bytes
-const DrawElementsIndirectCommandSize = 20 // 5 * 4 bytes
-
-// NewVBO creates a new Vertex Buffer Object
-func NewVBO(data []float32, usage BufferUsage) *BufferObject {
-	var vboID uint32
-	gl.GenBuffers(1, &vboID)
-
-	vbo := &BufferObject{
-		ID:    vboID,
-		Type:  gl.ARRAY_BUFFER,
-		Size:  4 * len(data),
-		Usage: uint32(usage),
-	}
-
-	vbo.Bind()
-	gl.BufferData(gl.ARRAY_BUFFER, vbo.Size, gl.Ptr(data), vbo.Usage)
-
-	return vbo
-}
-
-// NewDynamicVBO creates a new dynamic VBO optimized for frequent updates
-func NewDynamicVBO(sizeInBytes int) *BufferObject {
-	var vboID uint32
-	gl.GenBuffers(1, &vboID)
-
-	vbo := &BufferObject{
-		ID:    vboID,
-		Type:  gl.ARRAY_BUFFER,
+	buffer := &BufferObject{
+		ID:    bufferID,
+		Type:  bufferType,
 		Size:  sizeInBytes,
-		Usage: uint32(DynamicDraw),
-	}
-
-	vbo.Bind()
-	gl.BufferData(gl.ARRAY_BUFFER, vbo.Size, nil, vbo.Usage)
-
-	return vbo
-}
-
-// NewEBO creates a new Element Buffer Object (Index Buffer)
-func NewEBO(indices []uint32, usage BufferUsage) *BufferObject {
-	var eboID uint32
-	gl.GenBuffers(1, &eboID)
-
-	ebo := &BufferObject{
-		ID:    eboID,
-		Type:  gl.ELEMENT_ARRAY_BUFFER,
-		Size:  4 * len(indices),
 		Usage: uint32(usage),
 	}
 
-	ebo.Bind()
-	gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, ebo.Size, gl.Ptr(indices), ebo.Usage)
+	buffer.Bind()
+	gl.BufferData(bufferType, sizeInBytes, data, uint32(usage))
 
-	return ebo
+	return buffer
 }
 
-// NewSSBO creates a new Shader Storage Buffer Object
-func NewSSBO(dataSize int, data unsafe.Pointer, usage BufferUsage) *BufferObject {
-	var ssboID uint32
-	gl.GenBuffers(1, &ssboID)
-
-	ssbo := &BufferObject{
-		ID:    ssboID,
-		Type:  gl.SHADER_STORAGE_BUFFER,
-		Size:  dataSize,
-		Usage: uint32(usage),
-	}
-
-	ssbo.Bind()
-	gl.BufferData(gl.SHADER_STORAGE_BUFFER, ssbo.Size, data, ssbo.Usage)
-
-	return ssbo
-}
-
-// NewEmptySSBO creates an SSBO with no initial data
-func NewEmptySSBO(sizeInBytes int, usage BufferUsage) *BufferObject {
-	return NewSSBO(sizeInBytes, nil, usage)
-}
-
-// NewPersistentBuffer creates a buffer that can be persistently mapped
-// This allows the application to keep the buffer mapped while using it with OpenGL
+// NewPersistentBuffer creates a buffer that can be persistently mapped.
+// This allows CPU and GPU to simultaneously access the buffer.
+// The read and write parameters determine whether the buffer will be mapped for reading and/or writing.
+// Returns the created buffer object and any error that occurred during creation.
 func NewPersistentBuffer(type_ uint32, sizeInBytes int, read, write bool) (*BufferObject, error) {
 	var bufferID uint32
 	gl.GenBuffers(1, &bufferID)
@@ -169,7 +123,8 @@ func NewPersistentBuffer(type_ uint32, sizeInBytes int, read, write bool) (*Buff
 	return buffer, nil
 }
 
-// MapPersistent maps the buffer persistently so it can be accessed while in use by OpenGL
+// MapPersistent maps the buffer persistently so it can be accessed while in use by OpenGL.
+// Returns an error if mapping fails or if the buffer is already mapped.
 func (bo *BufferObject) MapPersistent(read, write bool) error {
 	if bo.IsMapped {
 		return fmt.Errorf("buffer is already mapped")
@@ -198,7 +153,8 @@ func (bo *BufferObject) MapPersistent(read, write bool) error {
 	return nil
 }
 
-// Unmap unmaps a mapped buffer
+// Unmap unmaps a mapped buffer.
+// Returns true if the buffer was successfully unmapped, false otherwise.
 func (bo *BufferObject) Unmap() bool {
 	if !bo.IsMapped {
 		return false
@@ -215,7 +171,8 @@ func (bo *BufferObject) Unmap() bool {
 	return success
 }
 
-// GetMappedPointer returns the pointer to the mapped buffer memory
+// GetMappedPointer returns the pointer to the mapped buffer memory.
+// Returns nil if the buffer is not mapped.
 func (bo *BufferObject) GetMappedPointer() unsafe.Pointer {
 	if !bo.IsMapped {
 		return nil
@@ -223,58 +180,37 @@ func (bo *BufferObject) GetMappedPointer() unsafe.Pointer {
 	return bo.MappedPtr
 }
 
-// Bind binds the buffer object
+// Bind binds the buffer object to its type target.
 func (bo *BufferObject) Bind() {
 	gl.BindBuffer(bo.Type, bo.ID)
 }
 
-// Unbind unbinds the buffer object
+// Unbind unbinds the buffer object from its type target.
 func (bo *BufferObject) Unbind() {
 	gl.BindBuffer(bo.Type, 0)
 }
 
-// BindBase binds a buffer to an indexed buffer target
+// BindBase binds a buffer to an indexed buffer target.
+// Used for shader storage buffers, uniform buffers, etc.
 func (bo *BufferObject) BindBase(index uint32) {
 	gl.BindBufferBase(bo.Type, index, bo.ID)
 }
 
-// BindRange binds a range of a buffer to an indexed buffer target
-func (bo *BufferObject) BindRange(index uint32, offset int, size int) {
-	gl.BindBufferRange(bo.Type, index, bo.ID, offset, size)
-}
-
-// UpdateData updates the entire buffer with new data
+// UpdateData updates the entire buffer with new data.
 func (bo *BufferObject) UpdateData(data unsafe.Pointer) {
 	bo.Bind()
 	gl.BufferSubData(bo.Type, 0, bo.Size, data)
 }
 
-// UpdateSubData updates a portion of the buffer with new data
+// UpdateSubData updates a portion of the buffer with new data.
+// The offset is in bytes from the start of the buffer.
 func (bo *BufferObject) UpdateSubData(offset int, size int, data unsafe.Pointer) {
 	bo.Bind()
 	gl.BufferSubData(bo.Type, offset, size, data)
 }
 
-// InvalidateData invalidates the buffer data to prepare for full update
-func (bo *BufferObject) InvalidateData() {
-	bo.Bind()
-	gl.InvalidateBufferData(bo.ID)
-}
-
-// InvalidateSubData invalidates a portion of the buffer data
-func (bo *BufferObject) InvalidateSubData(offset int, length int) {
-	bo.Bind()
-	gl.InvalidateBufferSubData(bo.ID, offset, length)
-}
-
-// Orphan orphans the buffer by reallocating its data store
-// This is useful for dynamic buffers to avoid waiting for GPU operations to finish
-func (bo *BufferObject) Orphan() {
-	bo.Bind()
-	gl.BufferData(bo.Type, bo.Size, nil, bo.Usage)
-}
-
-// Delete releases the buffer object
+// Delete releases the buffer object and frees its resources.
+// It automatically unmaps the buffer if it is mapped.
 func (bo *BufferObject) Delete() {
 	if bo.IsMapped {
 		bo.Unmap()
@@ -282,7 +218,8 @@ func (bo *BufferObject) Delete() {
 	gl.DeleteBuffers(1, &bo.ID)
 }
 
-// NewVAO creates a new Vertex Array Object
+// NewVAO creates a new Vertex Array Object.
+// It returns a pointer to a new VertexArrayObject.
 func NewVAO() *VertexArrayObject {
 	var vaoID uint32
 	gl.GenVertexArrays(1, &vaoID)
@@ -292,48 +229,38 @@ func NewVAO() *VertexArrayObject {
 	}
 }
 
-// Bind binds the vertex array object
+// Bind binds the vertex array object.
 func (vao *VertexArrayObject) Bind() {
 	gl.BindVertexArray(vao.ID)
 }
 
-// Unbind unbinds the vertex array object
+// Unbind unbinds the vertex array object.
 func (vao *VertexArrayObject) Unbind() {
 	gl.BindVertexArray(0)
 }
 
-// Delete releases the vertex array object
+// Delete releases the vertex array object and frees its resources.
 func (vao *VertexArrayObject) Delete() {
 	gl.DeleteVertexArrays(1, &vao.ID)
 }
 
-// SetVertexAttribPointer sets up a vertex attribute pointer
+// SetVertexAttribPointer sets up a vertex attribute pointer and enables the attribute.
+// This configures how OpenGL will interpret vertex data for a specific attribute.
 func (vao *VertexArrayObject) SetVertexAttribPointer(index uint32, size int32, xtype uint32, normalized bool, stride int32, offset int) {
 	gl.VertexAttribPointer(index, size, xtype, normalized, stride, gl.PtrOffset(offset))
 	gl.EnableVertexAttribArray(index)
 }
 
-// NewIndirectBuffer creates a buffer for multi-draw indirect commands
+// NewIndirectBuffer creates a buffer for multi-draw indirect commands.
+// Returns a new buffer object configured for indirect drawing commands.
 func NewIndirectBuffer(maxCommands int, usage BufferUsage) *BufferObject {
 	sizeInBytes := maxCommands * DrawElementsIndirectCommandSize
 
-	var bufferID uint32
-	gl.GenBuffers(1, &bufferID)
-
-	buffer := &BufferObject{
-		ID:    bufferID,
-		Type:  gl.DRAW_INDIRECT_BUFFER,
-		Size:  sizeInBytes,
-		Usage: uint32(usage),
-	}
-
-	buffer.Bind()
-	gl.BufferData(gl.DRAW_INDIRECT_BUFFER, buffer.Size, nil, buffer.Usage)
-
-	return buffer
+	return NewBufferObject(gl.DRAW_INDIRECT_BUFFER, sizeInBytes, nil, usage)
 }
 
-// UpdateIndirectCommands updates the indirect buffer with an array of draw commands
+// UpdateIndirectCommands updates the indirect buffer with an array of draw commands.
+// Panics if the buffer is not an indirect buffer or if the commands don't fit in the buffer.
 func (bo *BufferObject) UpdateIndirectCommands(commands []DrawElementsIndirectCommand) {
 	if bo.Type != gl.DRAW_INDIRECT_BUFFER {
 		panic("Buffer is not an indirect buffer")
@@ -347,60 +274,47 @@ func (bo *BufferObject) UpdateIndirectCommands(commands []DrawElementsIndirectCo
 	// Only update if we have commands and they fit in the buffer
 	if len(commands) > 0 && sizeInBytes <= bo.Size {
 		gl.BufferSubData(gl.DRAW_INDIRECT_BUFFER, 0, sizeInBytes, gl.Ptr(commands))
-	} else {
+	} else if len(commands) > 0 {
 		panic("Buffer is not large enough to hold the commands")
 	}
 }
 
-// NewPackedVertexBuffer creates a VBO specifically for packed vertices (uint32 format)
-func NewPackedVertexBuffer(vertices []uint32, usage BufferUsage) *BufferObject {
-	var vboID uint32
-	gl.GenBuffers(1, &vboID)
-
-	vbo := &BufferObject{
-		ID:    vboID,
-		Type:  gl.ARRAY_BUFFER,
-		Size:  4 * len(vertices), // uint32 = 4 bytes
-		Usage: uint32(usage),
-	}
-
-	vbo.Bind()
-	gl.BufferData(gl.ARRAY_BUFFER, vbo.Size, gl.Ptr(vertices), vbo.Usage)
-
-	return vbo
-}
-
-// MultiDrawElementsIndirect is a convenience function for drawing multiple batches
-// with a single call
+// MultiDrawElementsIndirect is a convenience function for drawing multiple batches with a single call.
+// The mode parameter specifies the primitive type (e.g., gl.TRIANGLES).
+// The indexType parameter specifies the type of indices (e.g., gl.UNSIGNED_INT).
+// The commandCount parameter specifies the number of draw commands to execute.
 func MultiDrawElementsIndirect(mode uint32, indexType uint32, commandCount int) {
 	gl.MultiDrawElementsIndirect(mode, indexType, nil, int32(commandCount), 0)
 }
 
-// TripleBuffer manages a triple-buffered persistent buffer for efficient CPU-GPU data transfer
+// TripleBuffer manages a triple-buffered persistent buffer for efficient CPU-GPU data transfer.
+// It helps avoid stalls by allowing the CPU to write to one buffer while the GPU reads from another.
 type TripleBuffer struct {
 	Buffer           *BufferObject  // The underlying buffer object
 	NumBuffers       int            // Number of buffer sections (typically 3)
 	BufferSize       int            // Size of each buffer section in bytes
 	CurrentBufferIdx int            // Index of the buffer section currently being written to
-	BufferOffsets    []int          // Offsets for each buffer section in float32 units
+	BufferOffsets    []int          // Offsets for each buffer section in bytes
 	SyncObjects      []uintptr      // Fence sync objects for each buffer section
 	MappedMemory     unsafe.Pointer // Pointer to the mapped memory
-	MappedFloats     []float32      // Go slice backed by persistent mapped memory (as float32)
-	MappedUints      []uint32       // Go slice backed by persistent mapped memory (as uint32)
 }
 
-// NewTripleBuffer creates a new triple-buffered persistent buffer
+// NewTripleBuffer creates a new triple-buffered persistent buffer.
+// The bufferType parameter specifies the buffer target.
+// The sectionSizeBytes parameter specifies the size of each buffer section in bytes.
+// The numBuffers parameter specifies the number of buffer sections (typically 3).
+// Returns the created triple buffer and any error that occurred during creation.
 func NewTripleBuffer(bufferType uint32, sectionSizeBytes int, numBuffers int) (*TripleBuffer, error) {
 	if numBuffers < 2 {
-		numBuffers = 2 // At least double buffering
+		numBuffers = 3 // Default to triple buffering
 	}
 
 	totalSize := sectionSizeBytes * numBuffers
 
-	// Create the persistent buffer
+	// Create the persistent buffer with write flag
 	buffer, err := NewPersistentBuffer(bufferType, totalSize, false, true)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create persistent buffer: %w", err)
 	}
 
 	// Create the triple buffer
@@ -415,52 +329,36 @@ func NewTripleBuffer(bufferType uint32, sectionSizeBytes int, numBuffers int) (*
 	}
 
 	// Calculate offsets for each buffer section
-	for i := 0; i < numBuffers; i++ {
-		tb.BufferOffsets[i] = i * (sectionSizeBytes / 4) // Convert bytes to float32/uint32 offset
+	for i := range numBuffers {
+		tb.BufferOffsets[i] = i * sectionSizeBytes
 	}
-
-	// Create slices that view the mapped memory
-	tb.MappedFloats = unsafe.Slice((*float32)(tb.MappedMemory), totalSize/4)
-	tb.MappedUints = unsafe.Slice((*uint32)(tb.MappedMemory), totalSize/4)
 
 	return tb, nil
 }
 
-// CurrentOffsetFloats returns the offset of the current buffer section in float32 units
-func (tb *TripleBuffer) CurrentOffsetFloats() int {
-	return tb.BufferOffsets[tb.CurrentBufferIdx]
-}
-
-// CurrentOffsetBytes returns the offset of the current buffer section in bytes
-func (tb *TripleBuffer) CurrentOffsetBytes() int {
-	return tb.BufferOffsets[tb.CurrentBufferIdx] * 4
-}
-
-// WaitForSync waits until the GPU has finished using the current buffer section
-func (tb *TripleBuffer) WaitForSync() {
+// WaitForSync waits until the GPU has finished using the current buffer section.
+// Returns true if synchronization was successful, false otherwise.
+func (tb *TripleBuffer) WaitForSync() bool {
 	// Early exit if no sync object exists
 	if tb.SyncObjects[tb.CurrentBufferIdx] == 0 {
-		return
+		return true
 	}
 
-	const timeout uint64 = 1000000000 // 1 second in nanoseconds
+	const timeout uint64 = 10000000 // 10 milliseconds in nanoseconds
 
-	for {
-		waitReturn := gl.ClientWaitSync(tb.SyncObjects[tb.CurrentBufferIdx], gl.SYNC_FLUSH_COMMANDS_BIT, timeout)
-		if waitReturn == gl.ALREADY_SIGNALED || waitReturn == gl.CONDITION_SATISFIED {
-			// Sync is complete, we can proceed
-			return
-		} else if waitReturn == gl.WAIT_FAILED {
-			// Something went wrong, but we'll proceed anyway to avoid deadlock
-			return
-		} else if waitReturn == gl.TIMEOUT_EXPIRED {
-			// Timeout occurred, but we'll proceed to avoid deadlock
-			return
-		}
+	waitReturn := gl.ClientWaitSync(tb.SyncObjects[tb.CurrentBufferIdx], gl.SYNC_FLUSH_COMMANDS_BIT, timeout)
+
+	// Once we're done waiting, delete the sync object
+	if tb.SyncObjects[tb.CurrentBufferIdx] != 0 {
+		gl.DeleteSync(tb.SyncObjects[tb.CurrentBufferIdx])
+		tb.SyncObjects[tb.CurrentBufferIdx] = 0
 	}
+
+	return waitReturn == gl.ALREADY_SIGNALED || waitReturn == gl.CONDITION_SATISFIED
 }
 
-// CreateFenceSync creates a fence sync object for the current buffer
+// CreateFenceSync creates a fence sync object for the current buffer.
+// This marks the point in the command stream when all previous commands must complete.
 func (tb *TripleBuffer) CreateFenceSync() {
 	// Delete any existing sync object
 	if tb.SyncObjects[tb.CurrentBufferIdx] != 0 {
@@ -471,32 +369,20 @@ func (tb *TripleBuffer) CreateFenceSync() {
 	tb.SyncObjects[tb.CurrentBufferIdx] = gl.FenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)
 }
 
-// Advance moves to the next buffer section
+// Advance moves to the next buffer section in the rotation.
+// This allows for triple buffering by cycling through the available buffer sections.
 func (tb *TripleBuffer) Advance() {
 	tb.CurrentBufferIdx = (tb.CurrentBufferIdx + 1) % tb.NumBuffers
 }
 
-// WriteFloats writes float32 data to the current buffer section
-func (tb *TripleBuffer) WriteFloats(data []float32, offsetInSection int) {
-	if offsetInSection+len(data) > tb.BufferSize/4 {
-		panic("data would exceed buffer section size")
-	}
-
-	baseOffset := tb.BufferOffsets[tb.CurrentBufferIdx] + offsetInSection
-	copy(tb.MappedFloats[baseOffset:baseOffset+len(data)], data)
+// CurrentOffsetBytes returns the offset of the current buffer section in bytes.
+// This is useful for calculating memory offsets when writing to the buffer.
+func (tb *TripleBuffer) CurrentOffsetBytes() int {
+	return tb.BufferOffsets[tb.CurrentBufferIdx]
 }
 
-// WriteUints writes uint32 data to the current buffer section
-func (tb *TripleBuffer) WriteUints(data []uint32, offsetInSection int) {
-	if offsetInSection+len(data) > tb.BufferSize/4 {
-		panic("data would exceed buffer section size")
-	}
-
-	baseOffset := tb.BufferOffsets[tb.CurrentBufferIdx] + offsetInSection
-	copy(tb.MappedUints[baseOffset:baseOffset+len(data)], data)
-}
-
-// Cleanup releases all resources
+// Cleanup releases all resources associated with the triple buffer.
+// This should be called when the triple buffer is no longer needed.
 func (tb *TripleBuffer) Cleanup() {
 	// Delete sync objects
 	for i, sync := range tb.SyncObjects {
@@ -511,54 +397,4 @@ func (tb *TripleBuffer) Cleanup() {
 		tb.Buffer.Delete()
 		tb.Buffer = nil
 	}
-}
-
-// CreatePersistentBuffer creates a buffer with persistent mapping and returns the mapped data
-// This allows accessing the buffer directly from CPU memory while GPU is using it
-func CreatePersistentBuffer(bufferType uint32, sizeInBytes int, flags uint32) (*BufferObject, []byte, error) {
-	var bufferID uint32
-	gl.GenBuffers(1, &bufferID)
-
-	buffer := &BufferObject{
-		ID:         bufferID,
-		Type:       bufferType,
-		Size:       sizeInBytes,
-		Persistent: true,
-	}
-
-	// Create buffer with storage
-	buffer.Bind()
-	gl.BufferStorage(bufferType, sizeInBytes, nil, flags)
-
-	// Map the buffer
-	buffer.Bind()
-	buffer.MappedPtr = gl.MapBufferRange(bufferType, 0, sizeInBytes, flags)
-
-	if buffer.MappedPtr == nil {
-		buffer.Delete()
-		return nil, nil, fmt.Errorf("failed to map buffer")
-	}
-
-	buffer.IsMapped = true
-
-	// Convert to []byte for Go access
-	mappedBytes := unsafe.Slice((*byte)(buffer.MappedPtr), sizeInBytes)
-
-	return buffer, mappedBytes, nil
-}
-
-// BytesToUint32 converts a byte slice to a uint32 slice
-// This is useful for working with mapped buffer memory
-func BytesToUint32(bytes []byte) []uint32 {
-	if len(bytes) == 0 {
-		return nil
-	}
-
-	// Ensure byte slice length is a multiple of 4
-	if len(bytes)%4 != 0 {
-		panic("byte slice length must be a multiple of 4 for uint32 conversion")
-	}
-
-	// Create a uint32 slice that uses the same underlying memory
-	return unsafe.Slice((*uint32)(unsafe.Pointer(&bytes[0])), len(bytes)/4)
 }

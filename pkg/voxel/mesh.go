@@ -82,9 +82,10 @@ type Face struct {
 
 // Mesh represents a mesh of triangles
 type Mesh struct {
-	Faces    []Face
-	Vertices []Vertex
-	Indices  []uint32
+	Faces           []Face
+	Vertices        []Vertex
+	Indices         []uint32
+	GenerateIndices bool // Whether to generate indices (defaults to false, since we use shared indices)
 
 	// Packed data for efficient rendering
 	PackedVertices []uint32
@@ -93,10 +94,11 @@ type Mesh struct {
 // NewMesh creates a new empty mesh
 func NewMesh() *Mesh {
 	return &Mesh{
-		Faces:          make([]Face, 0),
-		Vertices:       make([]Vertex, 0),
-		Indices:        make([]uint32, 0),
-		PackedVertices: make([]uint32, 0),
+		Faces:           make([]Face, 0),
+		Vertices:        make([]Vertex, 0),
+		Indices:         make([]uint32, 0),
+		GenerateIndices: false,
+		PackedVertices:  make([]uint32, 0),
 	}
 }
 
@@ -112,9 +114,11 @@ func (m *Mesh) AddFace(face Face) {
 		m.Vertices = append(m.Vertices, v)
 	}
 
-	// Add indices for two triangles (CCW winding)
-	m.Indices = append(m.Indices, baseIndex, baseIndex+1, baseIndex+2)
-	m.Indices = append(m.Indices, baseIndex, baseIndex+2, baseIndex+3)
+	// Add indices for two triangles (CCW winding) only if index generation is enabled
+	if m.GenerateIndices {
+		m.Indices = append(m.Indices, baseIndex, baseIndex+1, baseIndex+2)
+		m.Indices = append(m.Indices, baseIndex, baseIndex+2, baseIndex+3)
+	}
 }
 
 // AddPackedFace adds a face with packed vertex data
@@ -145,7 +149,7 @@ func GreedyMeshChunk(voxels [][][]BlockType, chunkPos mgl32.Vec3) *Mesh {
 	}
 
 	// Process each axis direction separately
-	for axis := 0; axis < 3; axis++ {
+	for axis := range 3 {
 		// Define the dimensions and axes based on the current main axis
 		var uAxis, vAxis int
 		var maskSize [3]int
@@ -169,7 +173,7 @@ func GreedyMeshChunk(voxels [][][]BlockType, chunkPos mgl32.Vec3) *Mesh {
 			idsPos := make([][]BlockType, maskSize[uAxis])
 			idsNeg := make([][]BlockType, maskSize[uAxis])
 
-			for i := 0; i < maskSize[uAxis]; i++ {
+			for i := range maskSize[uAxis] {
 				maskPos[i] = make([]bool, maskSize[vAxis])
 				maskNeg[i] = make([]bool, maskSize[vAxis])
 				idsPos[i] = make([]BlockType, maskSize[vAxis])
@@ -179,8 +183,8 @@ func GreedyMeshChunk(voxels [][][]BlockType, chunkPos mgl32.Vec3) *Mesh {
 			// Fill the masks based on voxel visibility
 			if 0 < x && x < maskSize[axis] {
 				// Interior faces
-				for u := 0; u < maskSize[uAxis]; u++ {
-					for v := 0; v < maskSize[vAxis]; v++ {
+				for u := range maskSize[uAxis] {
+					for v := range maskSize[vAxis] {
 						// Convert 2D mask coordinates to 3D voxel coordinates
 						var pos, neg [3]int
 						pos[axis] = x
@@ -219,8 +223,8 @@ func GreedyMeshChunk(voxels [][][]BlockType, chunkPos mgl32.Vec3) *Mesh {
 				}
 			} else if x == 0 {
 				// Negative boundary
-				for u := 0; u < maskSize[uAxis]; u++ {
-					for v := 0; v < maskSize[vAxis]; v++ {
+				for u := range maskSize[uAxis] {
+					for v := range maskSize[vAxis] {
 						var pos [3]int
 						pos[axis] = 0
 						pos[uAxis] = u
@@ -237,8 +241,8 @@ func GreedyMeshChunk(voxels [][][]BlockType, chunkPos mgl32.Vec3) *Mesh {
 				}
 			} else if x == maskSize[axis] {
 				// Positive boundary
-				for u := 0; u < maskSize[uAxis]; u++ {
-					for v := 0; v < maskSize[vAxis]; v++ {
+				for u := range maskSize[uAxis] {
+					for v := range maskSize[vAxis] {
 						var neg [3]int
 						neg[axis] = x - 1
 						neg[uAxis] = u
@@ -256,7 +260,7 @@ func GreedyMeshChunk(voxels [][][]BlockType, chunkPos mgl32.Vec3) *Mesh {
 			}
 
 			// Process both face directions
-			for maskDir := 0; maskDir < 2; maskDir++ {
+			for maskDir := range 2 {
 				var mask [][]bool
 				var ids [][]BlockType
 				var normalSign int
@@ -273,8 +277,8 @@ func GreedyMeshChunk(voxels [][][]BlockType, chunkPos mgl32.Vec3) *Mesh {
 
 				// Check if there are any faces to process
 				hasFaces := false
-				for u := 0; u < maskSize[uAxis]; u++ {
-					for v := 0; v < maskSize[vAxis]; v++ {
+				for u := range maskSize[uAxis] {
+					for v := range maskSize[vAxis] {
 						if mask[u][v] {
 							hasFaces = true
 							break
@@ -296,8 +300,8 @@ func GreedyMeshChunk(voxels [][][]BlockType, chunkPos mgl32.Vec3) *Mesh {
 				}
 
 				// Extract rectangles (similar to Python's extract_rectangles)
-				for u := 0; u < maskSize[uAxis]; u++ {
-					for v := 0; v < maskSize[vAxis]; v++ {
+				for u := range maskSize[uAxis] {
+					for v := range maskSize[vAxis] {
 						if !mask[u][v] || visited[u][v] {
 							continue
 						}
@@ -317,7 +321,7 @@ func GreedyMeshChunk(voxels [][][]BlockType, chunkPos mgl32.Vec3) *Mesh {
 
 						for height+u < maskSize[uAxis] && canExtend {
 							// Check if we can extend the entire row
-							for i := 0; i < width; i++ {
+							for i := range width {
 								if !mask[u+height][v+i] || visited[u+height][v+i] || ids[u+height][v+i] != blockType {
 									canExtend = false
 									break
@@ -330,8 +334,8 @@ func GreedyMeshChunk(voxels [][][]BlockType, chunkPos mgl32.Vec3) *Mesh {
 						}
 
 						// Mark as visited
-						for i := 0; i < height; i++ {
-							for j := 0; j < width; j++ {
+						for i := range height {
+							for j := range width {
 								visited[u+i][v+j] = true
 							}
 						}
@@ -431,9 +435,7 @@ func GreedyMeshChunk(voxels [][][]BlockType, chunkPos mgl32.Vec3) *Mesh {
 
 						// Get texture ID from block type (limit to 8 bits)
 						textureID := int(blockType)
-						if textureID > 255 {
-							textureID = 255
-						}
+						textureID = min(textureID, 255)
 
 						// Default ambient occlusion
 						ambientOcclusion := 7
