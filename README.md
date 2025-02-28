@@ -103,4 +103,22 @@ Chunks are managed efficiently with:
 
 ## License
 
-[MIT License](LICENSE) 
+[MIT License](LICENSE)
+
+## Thread Safety
+
+### OpenGL Thread Safety
+
+All OpenGL operations must be performed on the main thread where the OpenGL context was created. The renderer implements a command queue system to ensure thread safety:
+
+1. The `ExecuteOnMainThread` method allows scheduling functions to run on the main OpenGL thread
+2. The `ProcessCommandQueueWithTimeout` method is called in the main render loop to execute these functions with a time budget to prevent frame stuttering
+3. Thread-safe wrapper methods (e.g., `ThreadSafeAddDrawCommand`, `SafelyUpdateBufferData`) are provided for operations that need to be performed from background goroutines
+
+For optimal performance, the renderer implements several advanced techniques:
+
+- **Triple Buffering**: Using `SafelyUpdateTripleBuffer` to ensure the GPU and CPU don't access the same buffer segment simultaneously
+- **Command Batching**: `BatchCommands` method reduces overhead by executing multiple commands in a single queue operation
+- **Fence Synchronization**: Proper fence sync objects are used to synchronize GPU and CPU access to shared resources
+
+Background processing (like chunk generation) should use these methods when interacting with OpenGL resources to avoid segmentation faults. 

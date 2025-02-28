@@ -1,0 +1,129 @@
+---
+description: Golang documentation code
+globs: *.go
+alwaysApply: false
+---
+## **1. Coding Standards**
+### **1.1 Naming**
+- **CamelCase** for exported, **lowerCamelCase** for unexported.
+- Avoid abbreviations unless common (`buf`, `ctx`).
+- Function names must describe their action.
+
+### **1.2 Errors**
+- **Always** check and return errors.
+- Use `fmt.Errorf("%w", err)` for wrapping.
+- Use `errors.Is()` / `errors.As()` for checking.
+
+**Good:**
+```
+if err := process(); err != nil {
+    return fmt.Errorf("failed to process: %w", err)
+}
+```
+**Bad:** `process() // Ignored error!`
+
+### **1.3 Concurrency**
+- Use **channels** for communication.
+- Use **`sync.WaitGroup`** to wait for goroutines.
+- Limit goroutines to avoid resource exhaustion.
+
+**Good:**
+```
+var wg sync.WaitGroup
+wg.Add(1)
+go func() { defer wg.Done(); fmt.Println("Task done") }()
+wg.Wait()
+```
+
+### **1.4 Context**
+- Use `context.Context` for timeouts/cancellations.
+- Pass `ctx` as the **first** argument.
+
+**Good:**
+```
+func fetchData(ctx context.Context, url string) (string, error) {
+    req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+    resp, err := http.DefaultClient.Do(req)
+    if err != nil { return "", err }
+    defer resp.Body.Close()
+    body, _ := io.ReadAll(resp.Body)
+    return string(body), nil
+}
+```
+
+### **1.5 Dependencies**
+- Prefer **standard library**.
+- Run `go mod tidy` to keep `go.mod` clean.
+
+---
+
+## **2. Documentation**
+### **2.1 Packages**
+- Each package **must** have a top-level comment.
+
+**Example:**
+```
+// Package path manipulates slash-separated paths.
+// For OS paths, use [path/filepath].
+package path
+```
+
+### **2.2 Structs & Fields**
+- Document **what instances represent**.
+- Exported fields **must** be documented.
+
+**Example:**
+```
+// LimitedReader limits the bytes read from an underlying Reader.
+type LimitedReader struct {
+    R Reader // Source reader.
+    N int64  // Remaining bytes.
+}
+```
+
+### **2.3 Functions**
+- Start with **"FuncName does X"**.
+- Mention **return values** and **side effects**.
+- Use **"reports whether"** for boolean functions.
+
+**Example:**
+```
+// HasPrefix reports whether s begins with prefix.
+func HasPrefix(s, prefix string) bool
+```
+
+## **3. Code Quality**
+
+### **3.1 Performance & Memory**
+- Use `strings.Builder` for string concatenation.
+- Release resources properly (`defer` for cleanup).
+
+**Good:**
+```
+func processFile(filename string) error {
+    f, err := os.Open(filename)
+    if err != nil { return err }
+    defer f.Close() // Ensure cleanup
+    return nil
+}
+```
+
+
+## **4. Do's & Don'ts**
+**Do:**
+- Keep functions **small** and **focused**.
+- Use **small interfaces**.
+- Make **zero-values useful**.
+
+**Don't:**
+- Avoid **init()** unless necessary.
+- Minimize **global variables**.
+- **Never** ignore errors.
+
+---
+
+## **5. AI Code Generation**
+- Follow **idiomatic Go** patterns.
+- Document **all exported symbols**.
+- Prioritize **performance & readability** over cleverness.
+- Use `context` for external calls.
